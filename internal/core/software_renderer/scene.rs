@@ -19,7 +19,9 @@ pub struct SceneVectors {
     pub textures: Vec<SceneTexture<'static>>,
     pub rounded_rectangles: Vec<RoundedRectangle>,
     pub shared_buffers: Vec<SharedBufferCommand>,
-    pub gradients: Vec<GradientCommand>,
+    pub linear_gradients: Vec<LinearGradientCommand>,
+    pub radial_gradients: Vec<RadialGradientCommand>,
+    pub conic_gradients: Vec<ConicGradientCommand>,
 }
 
 pub struct Scene {
@@ -275,9 +277,17 @@ pub enum SceneCommand {
     RoundedRectangle {
         rectangle_index: u16,
     },
-    /// rectangle_index is an index in the [`SceneVectors::rounded_gradients`] array
-    Gradient {
-        gradient_index: u16,
+    /// linear_gradient_index is an index in the [`SceneVectors::linear_gradients`] array
+    LinearGradient {
+        linear_gradient_index: u16,
+    },
+    /// radial_gradient_index is an index in the [`SceneVectors::radial_gradients`] array
+    RadialGradient {
+        radial_gradient_index: u16,
+    },
+    /// conic_gradient_index is an index in the [`SceneVectors::conic_gradients`] array
+    ConicGradient {
+        conic_gradient_index: u16,
     },
 }
 
@@ -291,7 +301,7 @@ pub struct SceneTexture<'a> {
     pub extra: SceneTextureExtra,
 }
 
-impl SceneTexture<'_> {
+impl<'a> SceneTexture<'a> {
     pub fn source_size(&self) -> PhysicalSize {
         let mut len = self.data.len();
         if self.format == TexturePixelFormat::SignedDistanceField {
@@ -307,6 +317,23 @@ impl SceneTexture<'_> {
         } else {
             PhysicalSize::new(w as _, (h + 1) as _)
         }
+    }
+
+    pub fn from_target_texture(
+        texture: &'a super::target_pixel_buffer::DrawTextureArgs,
+        clip: &PhysicalRect,
+    ) -> Option<(Self, PhysicalRect)> {
+        let (extra, geometry) = SceneTextureExtra::from_target_texture(texture, clip)?;
+        let source = texture.source();
+        Some((
+            Self {
+                data: source.data,
+                pixel_stride: (source.byte_stride / source.pixel_format.bpp()) as u16,
+                format: source.pixel_format,
+                extra,
+            },
+            geometry,
+        ))
     }
 }
 
@@ -325,16 +352,86 @@ pub struct SceneTextureExtra {
     pub rotation: RenderingRotation,
 }
 
+impl SceneTextureExtra {
+    pub fn from_target_texture(
+        texture: &super::target_pixel_buffer::DrawTextureArgs,
+        clip: &PhysicalRect,
+    ) -> Option<(Self, PhysicalRect)> {
+        let geometry: PhysicalRect = euclid::rect(
+            texture.dst_x as i16,
+            texture.dst_y as i16,
+            texture.dst_width as i16,
+            texture.dst_height as i16,
+        );
+        let geometry = geometry.to_box2d();
+        let clipped_geometry = geometry.intersection(&clip.to_box2d())?;
+
+        let mut offset = match texture.rotation {
+            RenderingRotation::NoRotation => clipped_geometry.min - geometry.min,
+            RenderingRotation::Rotate90 => euclid::vec2(
+                clipped_geometry.min.y - geometry.min.y,
+                geometry.max.x - clipped_geometry.max.x,
+            ),
+            RenderingRotation::Rotate180 => geometry.max - clipped_geometry.max,
+            RenderingRotation::Rotate270 => euclid::vec2(
+                geometry.max.y - clipped_geometry.max.y,
+                clipped_geometry.min.x - geometry.min.x,
+            ),
+        };
+
+        let source_size = texture.source_size().cast::<i32>();
+        let (dx, dy) = if let Some(tiling) = &texture.tiling {
+            offset -= euclid::vec2(tiling.offset_x, tiling.offset_y).cast();
+
+            // FIXME: gap
+            tiling.gap_x;
+            tiling.gap_y;
+
+            (Fixed::from_f32(tiling.scale_x)?, Fixed::from_f32(tiling.scale_y)?)
+        } else {
+            let (dst_w, dst_h) = if texture.rotation.is_transpose() {
+                (texture.dst_height as i32, texture.dst_width as i32)
+            } else {
+                (texture.dst_width as i32, texture.dst_height as i32)
+            };
+            let dx = Fixed::<i32, 8>::from_fraction(source_size.width, dst_w);
+            let dy = Fixed::<i32, 8>::from_fraction(source_size.height, dst_h);
+            (dx, dy)
+        };
+
+        Some((
+            Self {
+                colorize: texture.colorize.unwrap_or_default(),
+                alpha: texture.alpha,
+                rotation: texture.rotation,
+                dx: Fixed::try_from_fixed(dx).ok()?,
+                dy: Fixed::try_from_fixed(dy).ok()?,
+                off_x: Fixed::try_from_fixed(dx * offset.x as i32).ok()?,
+                off_y: Fixed::try_from_fixed(dy * offset.y as i32).ok()?,
+            },
+            clipped_geometry.to_rect(),
+        ))
+    }
+}
+
+#[derive(Clone)]
 pub enum SharedBufferData {
     SharedImage(SharedImageBuffer),
     AlphaMap { data: Rc<[u8]>, width: u16 },
 }
 
 impl SharedBufferData {
-    fn width(&self) -> usize {
+    pub fn width(&self) -> usize {
         match self {
             SharedBufferData::SharedImage(image) => image.width() as usize,
             SharedBufferData::AlphaMap { width, .. } => *width as usize,
+        }
+    }
+    #[allow(unused)]
+    pub fn height(&self) -> usize {
+        match self {
+            SharedBufferData::SharedImage(image) => image.height() as usize,
+            SharedBufferData::AlphaMap { data, width, .. } => data.len() / *width as usize,
         }
     }
 }
@@ -414,7 +511,7 @@ pub struct RoundedRectangle {
 ///  - if false: on the left side, goes from `start` to 1, on the right side, goes from 0 to `1-start`
 ///  - if true: on the left side, goes from 0 to `1-start`, on the right side, goes from `start` to `1`
 #[derive(Debug)]
-pub struct GradientCommand {
+pub struct LinearGradientCommand {
     pub color1: PremultipliedRgbaColor,
     pub color2: PremultipliedRgbaColor,
     pub start: u8,
@@ -428,4 +525,31 @@ pub struct GradientCommand {
     pub right_clip: PhysicalLength,
     pub top_clip: PhysicalLength,
     pub bottom_clip: PhysicalLength,
+}
+
+/// Radial gradient that interpolates colors from the center outward
+///
+/// Unlike LinearGradientCommand, radial gradients don't have clipping fields
+/// because they radiate uniformly in all directions from the center point.
+/// The gradient is naturally clipped by the rectangle bounds during rendering.
+#[derive(Debug)]
+pub struct RadialGradientCommand {
+    /// The gradient stops (colors and positions)
+    pub stops: crate::SharedVector<crate::graphics::GradientStop>,
+    /// Center of the gradient relative to the item position
+    pub center_x: PhysicalLength,
+    pub center_y: PhysicalLength,
+}
+
+/// Conic gradient that interpolates colors around a center point
+///
+/// The gradient creates a color transition that rotates around the center of the
+/// rectangle being drawn. The angle positions are specified in the gradient stops,
+/// where 0 = 0 degrees (north) and 1 = 360 degrees. Colors are interpolated based
+/// on the angle from north, going clockwise.
+#[derive(Debug)]
+pub struct ConicGradientCommand {
+    /// The gradient stops (colors and normalized angle positions)
+    /// Position 0 = 0 degrees (north), 1 = 360 degrees
+    pub stops: crate::SharedVector<crate::graphics::GradientStop>,
 }

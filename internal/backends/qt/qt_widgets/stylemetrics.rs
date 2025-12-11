@@ -35,7 +35,6 @@ pub struct NativeStyleMetrics {
     pub text_cursor_width: Property<LogicalLength>,
     pub window_background: Property<Color>,
     pub default_text_color: Property<Color>,
-    pub default_font_size: Property<LogicalLength>,
     pub textedit_background: Property<Color>,
     pub textedit_text_color: Property<Color>,
     pub textedit_background_disabled: Property<Color>,
@@ -48,6 +47,8 @@ pub struct NativeStyleMetrics {
 
     // Tab Bar metrics:
     pub tab_bar_alignment: Property<LayoutAlignment>,
+
+    pub style_name: Property<SharedString>,
 
     pub style_change_listener: core::cell::Cell<*const u8>,
 }
@@ -66,7 +67,6 @@ impl NativeStyleMetrics {
             text_cursor_width: Default::default(),
             window_background: Default::default(),
             default_text_color: Default::default(),
-            default_font_size: Default::default(),
             textedit_background: Default::default(),
             textedit_text_color: Default::default(),
             textedit_background_disabled: Default::default(),
@@ -75,6 +75,7 @@ impl NativeStyleMetrics {
             placeholder_color_disabled: Default::default(),
             dark_color_scheme: Default::default(),
             tab_bar_alignment: Default::default(),
+            style_name: Default::default(),
             style_change_listener: core::cell::Cell::new(core::ptr::null()),
         })
     }
@@ -124,10 +125,6 @@ impl NativeStyleMetrics {
             return qApp->palette().color(QPalette::WindowText).rgba();
         });
         self.default_text_color.set(Color::from_argb_encoded(default_text_color));
-        let default_font_size = cpp!(unsafe[] -> i32 as "int" {
-            return QFontInfo(qApp->font()).pixelSize();
-        });
-        self.default_font_size.set(LogicalLength::new(default_font_size as f32));
         let textedit_text_color = cpp!(unsafe[] -> u32 as "QRgb" {
             return qApp->palette().color(QPalette::Text).rgba();
         });
@@ -192,13 +189,13 @@ impl i_slint_core::rtti::BuiltinGlobal for NativeStyleMetrics {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn slint_native_style_metrics_init(self_: Pin<&NativeStyleMetrics>) {
     self_.style_change_listener.set(core::ptr::null()); // because the C++ code don't initialize it
     self_.init_impl();
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn slint_native_style_metrics_deinit(self_: Pin<&mut NativeStyleMetrics>) {
     let scl = self_.style_change_listener.get();
     cpp!(unsafe [scl as "StyleChangeListener*"] { delete scl; });

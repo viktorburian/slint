@@ -25,12 +25,14 @@ mod flickable;
 mod focus_handling;
 pub mod generate_item_indices;
 pub mod infer_aliases_types;
+mod inject_debug_hooks;
 mod inlining;
 mod lower_absolute_coordinates;
 mod lower_accessibility;
 mod lower_component_container;
 mod lower_layout;
 mod lower_menus;
+mod lower_platform;
 mod lower_popups;
 mod lower_property_to_element;
 mod lower_shadows;
@@ -55,6 +57,16 @@ mod z_order;
 use crate::expression_tree::Expression;
 use crate::namedreference::NamedReference;
 use smol_str::SmolStr;
+
+pub fn ignore_debug_hooks(expr: &Expression) -> &Expression {
+    let mut expr = expr;
+    loop {
+        match expr {
+            Expression::DebugHook { expression, .. } => expr = expression.as_ref(),
+            _ => return expr,
+        }
+    }
+}
 
 pub async fn run_passes(
     doc: &mut crate::object_tree::Document,
@@ -81,6 +93,7 @@ pub async fn run_passes(
     };
 
     let global_type_registry = type_loader.global_type_registry.clone();
+
     run_import_passes(doc, type_loader, diag);
     check_public_api::check_public_api(doc, &type_loader.compiler_config, diag);
 
@@ -88,16 +101,9 @@ pub async fn run_passes(
         keep_raw.then(|| crate::typeloader::snapshot_with_extra_doc(type_loader, doc).unwrap());
 
     collect_subcomponents::collect_subcomponents(doc);
-    doc.visit_all_used_components(|component| {
-        compile_paths::compile_paths(
-            component,
-            &doc.local_registry,
-            type_loader.compiler_config.embed_resources,
-            diag,
-        );
-    });
     lower_tabwidget::lower_tabwidget(doc, type_loader, diag).await;
     lower_menus::lower_menus(doc, type_loader, diag).await;
+    lower_component_container::lower_component_container(doc, type_loader, diag);
     collect_subcomponents::collect_subcomponents(doc);
 
     doc.visit_all_used_components(|component| {
@@ -109,6 +115,12 @@ pub async fn run_passes(
         );
         lower_states::lower_states(component, &doc.local_registry, diag);
         lower_text_input_interface::lower_text_input_interface(component);
+        compile_paths::compile_paths(
+            component,
+            &doc.local_registry,
+            type_loader.compiler_config.embed_resources,
+            diag,
+        );
         repeater_component::process_repeater_components(component);
         lower_popups::lower_popups(component, &doc.local_registry, diag);
         collect_init_code::collect_init_code(component);
@@ -129,7 +141,6 @@ pub async fn run_passes(
     doc.visit_all_used_components(|component| {
         border_radius::handle_border_radius(component, diag);
         flickable::handle_flickable(component, &global_type_registry.borrow());
-        lower_component_container::lower_component_container(component, &doc.local_registry, diag);
         lower_layout::lower_layouts(component, type_loader, &style_metrics, diag);
         default_geometry::default_geometry(component, diag);
         lower_absolute_coordinates::lower_absolute_coordinates(component);
@@ -194,10 +205,12 @@ pub async fn run_passes(
         doc.used_types.borrow_mut().sub_components.clear();
     }
 
-    binding_analysis::binding_analysis(doc, diag);
+    binding_analysis::binding_analysis(doc, &type_loader.compiler_config, diag);
     unique_id::assign_unique_id(doc);
 
     doc.visit_all_used_components(|component| {
+        lower_platform::lower_platform(component, type_loader);
+
         // Don't perform the empty rectangle removal when debug info is requested, because the resulting
         // item tree ends up with a hierarchy where certain items have children that aren't child elements
         // but siblings or sibling children. We need a new data structure to perform a correct element tree
@@ -223,6 +236,8 @@ pub async fn run_passes(
     });
 
     remove_unused_properties::remove_unused_properties(doc);
+    // collect globals once more: After optimizations we might have less globals
+    collect_globals::collect_globals(doc, diag);
     collect_structs_and_enums::collect_structs_and_enums(doc);
 
     doc.visit_all_used_components(|component| {
@@ -230,9 +245,6 @@ pub async fn run_passes(
             generate_item_indices::generate_item_indices(component);
         }
     });
-
-    // collect globals once more: After optimizations we might have less globals
-    collect_globals::collect_globals(doc, diag);
 
     embed_images::embed_images(
         doc,
@@ -279,6 +291,7 @@ pub async fn run_passes(
             });
 
             // This is not perfect, as this includes translations that may not be used.
+            #[cfg(feature = "bundle-translations")]
             if let Some(translation_builder) = doc.translation_builder.as_ref() {
                 translation_builder.collect_characters_seen(&mut characters_seen);
             }
@@ -312,6 +325,7 @@ pub fn run_import_passes(
     type_loader: &crate::typeloader::TypeLoader,
     diag: &mut crate::diagnostics::BuildDiagnostics,
 ) {
+    inject_debug_hooks::inject_debug_hooks(doc, type_loader);
     infer_aliases_types::resolve_aliases(doc, diag);
     resolving::resolve_expressions(doc, type_loader, diag);
     purity_check::purity_check(doc, diag);

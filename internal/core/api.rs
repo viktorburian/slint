@@ -11,7 +11,6 @@ This module contains types that are public and re-exported in the slint-rs as we
 pub use crate::future::*;
 use crate::graphics::{Rgba8Pixel, SharedPixelBuffer};
 use crate::input::{KeyEventType, MouseEvent};
-use crate::item_tree::ItemTreeVTable;
 use crate::window::{WindowAdapter, WindowInner};
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -250,6 +249,7 @@ fn logical_physical_size() {
     assert_eq!(logical.to_physical(2.), phys);
 }
 
+#[i_slint_core_macros::slint_doc]
 /// This enum describes a low-level access to specific graphics APIs used
 /// by the renderer.
 #[derive(Clone)]
@@ -268,6 +268,23 @@ pub enum GraphicsAPI<'a> {
         /// `getContext` function on the HTML Canvas element.
         context_type: &'a str,
     },
+    /// The rendering is based on WGPU 26.x. Use the provided fields to submit commits to the provided
+    /// WGPU command queue.
+    ///
+    /// *Note*: This function is behind the [`unstable-wgpu-26` feature flag](slint:rust:slint/docs/cargo_features/#backends)
+    ///         and may be removed or changed in future minor releases, as new major WGPU releases become available.
+    ///
+    /// See also the [`slint::wgpu_26`](slint:rust:slint/wgpu_26) module.
+    #[cfg(feature = "unstable-wgpu-26")]
+    #[non_exhaustive]
+    WGPU26 {
+        /// The WGPU instance used for rendering.
+        instance: wgpu_26::Instance,
+        /// The WGPU device used for rendering.
+        device: wgpu_26::Device,
+        /// The WGPU queue for used for command submission.
+        queue: wgpu_26::Queue,
+    },
 }
 
 impl core::fmt::Debug for GraphicsAPI<'_> {
@@ -277,24 +294,29 @@ impl core::fmt::Debug for GraphicsAPI<'_> {
             GraphicsAPI::WebGL { context_type, .. } => {
                 write!(f, "GraphicsAPI::WebGL(context_type = {context_type})")
             }
+            #[cfg(feature = "unstable-wgpu-26")]
+            GraphicsAPI::WGPU26 { .. } => write!(f, "GraphicsAPI::WGPU26"),
         }
     }
 }
 
 /// This enum describes the different rendering states, that will be provided
 /// to the parameter of the callback for `set_rendering_notifier` on the `slint::Window`.
+///
+/// When OpenGL is used for rendering, the context will be current.
+/// It's safe to call OpenGL functions, but it is crucial that the state of the context is
+/// preserved. So make sure to save and restore state such as `TEXTURE_BINDING_2D` or
+/// `ARRAY_BUFFER_BINDING` perfectly.
 #[derive(Debug, Clone)]
 #[repr(u8)]
 #[non_exhaustive]
 pub enum RenderingState {
-    /// The window has been created and the graphics adapter/context initialized. When OpenGL
-    /// is used for rendering, the context will be current.
+    /// The window has been created and the graphics adapter/context initialized.
     RenderingSetup,
-    /// The scene of items is about to be rendered.  When OpenGL
-    /// is used for rendering, the context will be current.
+    /// The scene of items is about to be rendered.
     BeforeRendering,
     /// The scene of items was rendered, but the back buffer was not sent for display presentation
-    /// yet (for example GL swap buffers). When OpenGL is used for rendering, the context will be current.
+    /// yet (for example GL swap buffers).
     AfterRendering,
     /// The window will be destroyed and/or graphics resources need to be released due to other
     /// constraints.
@@ -348,9 +370,10 @@ impl std::error::Error for SetRenderingNotifierError {}
 #[derive(Clone)]
 enum WindowHandleInner {
     HandleByAdapter(alloc::rc::Rc<dyn WindowAdapter>),
+    #[cfg(feature = "std")]
     HandleByRcRWH {
-        window_handle_provider: alloc::rc::Rc<dyn raw_window_handle_06::HasWindowHandle>,
-        display_handle_provider: alloc::rc::Rc<dyn raw_window_handle_06::HasDisplayHandle>,
+        window_handle_provider: std::sync::Arc<dyn raw_window_handle_06::HasWindowHandle>,
+        display_handle_provider: std::sync::Arc<dyn raw_window_handle_06::HasDisplayHandle>,
     },
 }
 
@@ -371,6 +394,7 @@ impl raw_window_handle_06::HasWindowHandle for WindowHandle {
     ) -> Result<raw_window_handle_06::WindowHandle<'_>, raw_window_handle_06::HandleError> {
         match &self.inner {
             WindowHandleInner::HandleByAdapter(adapter) => adapter.window_handle_06(),
+            #[cfg(feature = "std")]
             WindowHandleInner::HandleByRcRWH { window_handle_provider, .. } => {
                 window_handle_provider.window_handle()
             }
@@ -385,6 +409,7 @@ impl raw_window_handle_06::HasDisplayHandle for WindowHandle {
     ) -> Result<raw_window_handle_06::DisplayHandle<'_>, raw_window_handle_06::HandleError> {
         match &self.inner {
             WindowHandleInner::HandleByAdapter(adapter) => adapter.display_handle_06(),
+            #[cfg(feature = "std")]
             WindowHandleInner::HandleByRcRWH { display_handle_provider, .. } => {
                 display_handle_provider.display_handle()
             }
@@ -607,7 +632,7 @@ impl Window {
                     repeat: false,
                     event_type: KeyEventType::KeyPressed,
                     ..Default::default()
-                })
+                });
             }
             crate::platform::WindowEvent::KeyPressRepeated { text } => {
                 self.0.process_key_input(crate::input::KeyEvent {
@@ -615,14 +640,14 @@ impl Window {
                     repeat: true,
                     event_type: KeyEventType::KeyPressed,
                     ..Default::default()
-                })
+                });
             }
             crate::platform::WindowEvent::KeyReleased { text } => {
                 self.0.process_key_input(crate::input::KeyEvent {
                     text,
                     event_type: KeyEventType::KeyReleased,
                     ..Default::default()
-                })
+                });
             }
             crate::platform::WindowEvent::ScaleFactorChanged { scale_factor } => {
                 self.0.set_scale_factor(scale_factor);
@@ -658,20 +683,21 @@ impl Window {
     #[cfg(feature = "raw-window-handle-06")]
     pub fn window_handle(&self) -> WindowHandle {
         let adapter = self.0.window_adapter();
+        #[cfg(feature = "std")]
         if let Some((window_handle_provider, display_handle_provider)) =
             adapter.internal(crate::InternalToken).and_then(|internal| {
                 internal.window_handle_06_rc().ok().zip(internal.display_handle_06_rc().ok())
             })
         {
-            WindowHandle {
+            return WindowHandle {
                 inner: WindowHandleInner::HandleByRcRWH {
                     window_handle_provider,
                     display_handle_provider,
                 },
-            }
-        } else {
-            WindowHandle { inner: WindowHandleInner::HandleByAdapter(adapter) }
+            };
         }
+
+        WindowHandle { inner: WindowHandleInner::HandleByAdapter(adapter) }
     }
 
     /// Takes a snapshot of the window contents and returns it as RGBA8 encoded pixel buffer.
@@ -732,9 +758,9 @@ pub trait Global<'a, Component> {
 ///
 /// This trait is implemented by the [generated component](index.html#generated-components)
 pub trait ComponentHandle {
-    /// The type of the generated component.
+    /// The internal Inner type for `Weak<Self>::inner`.
     #[doc(hidden)]
-    type Inner;
+    type WeakInner: Clone + Default;
     /// Returns a new weak pointer.
     fn as_weak(&self) -> Weak<Self>
     where
@@ -746,7 +772,9 @@ pub trait ComponentHandle {
 
     /// Internal function used when upgrading a weak reference to a strong one.
     #[doc(hidden)]
-    fn from_inner(_: vtable::VRc<ItemTreeVTable, Self::Inner>) -> Self;
+    fn upgrade_from_weak_inner(_: &Self::WeakInner) -> Option<Self>
+    where
+        Self: Sized;
 
     /// Convenience function for [`crate::Window::show()`](struct.Window.html#method.show).
     /// This shows the window on the screen and maintains an extra strong reference while
@@ -793,7 +821,7 @@ mod weak_handle {
     /// as the one it has been created from.
     /// This is useful to use with [`invoke_from_event_loop()`] or [`Self::upgrade_in_event_loop()`].
     pub struct Weak<T: ComponentHandle> {
-        inner: vtable::VWeak<ItemTreeVTable, T::Inner>,
+        inner: T::WeakInner,
         #[cfg(feature = "std")]
         thread: std::thread::ThreadId,
     }
@@ -801,7 +829,7 @@ mod weak_handle {
     impl<T: ComponentHandle> Default for Weak<T> {
         fn default() -> Self {
             Self {
-                inner: vtable::VWeak::default(),
+                inner: T::WeakInner::default(),
                 #[cfg(feature = "std")]
                 thread: std::thread::current().id(),
             }
@@ -820,9 +848,9 @@ mod weak_handle {
 
     impl<T: ComponentHandle> Weak<T> {
         #[doc(hidden)]
-        pub fn new(rc: &vtable::VRc<ItemTreeVTable, T::Inner>) -> Self {
+        pub fn new(inner: T::WeakInner) -> Self {
             Self {
-                inner: vtable::VRc::downgrade(rc),
+                inner,
                 #[cfg(feature = "std")]
                 thread: std::thread::current().id(),
             }
@@ -841,7 +869,7 @@ mod weak_handle {
             if std::thread::current().id() != self.thread {
                 return None;
             }
-            self.inner.upgrade().map(T::from_inner)
+            T::upgrade_from_weak_inner(&self.inner)
         }
 
         /// Convenience function that returns a new strongly referenced component if
@@ -856,12 +884,13 @@ mod weak_handle {
                     "Trying to upgrade a Weak from a different thread than the one it belongs to"
                 );
             }
-            T::from_inner(self.inner.upgrade().expect("The Weak doesn't hold a valid component"))
+            T::upgrade_from_weak_inner(&self.inner)
+                .expect("The Weak doesn't hold a valid component")
         }
 
         /// A helper function to allow creation on `component_factory::Component` from
         /// a `ComponentHandle`
-        pub(crate) fn inner(&self) -> vtable::VWeak<ItemTreeVTable, T::Inner> {
+        pub(crate) fn inner(&self) -> T::WeakInner {
             self.inner.clone()
         }
 
@@ -964,6 +993,9 @@ pub fn invoke_from_event_loop(func: impl FnOnce() + Send + 'static) -> Result<()
 /// the initial call to `slint::run_event_loop()` will return.
 ///
 /// This function can be called from any thread
+///
+/// Any previously queued events may or may not be processed before the loop terminates.
+/// This is platform dependent behaviour.
 pub fn quit_event_loop() -> Result<(), EventLoopError> {
     crate::platform::with_event_loop_proxy(|proxy| {
         proxy.ok_or(EventLoopError::NoEventLoopProvider)?.quit_event_loop()
@@ -1006,7 +1038,6 @@ impl std::error::Error for EventLoopError {}
 /// use slint::platform::PlatformError;
 /// PlatformError::from(format!("Could not load resource {}", 1234));
 /// ```
-#[derive(Debug)]
 #[non_exhaustive]
 pub enum PlatformError {
     /// No default platform was selected, or no platform could be initialized.
@@ -1029,6 +1060,19 @@ pub enum PlatformError {
     /// Another platform-specific error occurred.
     #[cfg(feature = "std")]
     OtherError(Box<dyn std::error::Error + Send + Sync>),
+}
+
+#[cfg(target_arch = "wasm32")]
+impl From<PlatformError> for wasm_bindgen::JsValue {
+    fn from(err: PlatformError) -> wasm_bindgen::JsValue {
+        wasm_bindgen::JsError::from(err).into()
+    }
+}
+
+impl core::fmt::Debug for PlatformError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(self, f)
+    }
 }
 
 impl core::fmt::Display for PlatformError {

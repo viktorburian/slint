@@ -5,9 +5,9 @@ title: The `.slint` File
 description:  The `.slint` File
 ---
 
-import CodeSnippetMD from '/src/components/CodeSnippetMD.astro';
-import Link from '/src/components/Link.astro';
-import LangRefLink from '/src/components/LangRefLink.astro';
+import CodeSnippetMD from '@slint/common-files/src/components/CodeSnippetMD.astro';
+import Link from '@slint/common-files/src/components/Link.astro';
+import LangRefLink from '@slint/common-files/src/components/LangRefLink.astro';
 
 
 You write user interfaces in the Slint language and saved in files with the `.slint` extension.
@@ -292,10 +292,14 @@ export { MathLogic } // known as "MathLogic" when using native APIs to access gl
 The following syntax is supported for importing types:
 
 ```slint no-test
-import { export1 } from "module.slint";
-import { export1, export2 } from "module.slint";
-import { export1 as alias1 } from "module.slint";
-import { export1, export2 as alias2, /* ... */ } from "module.slint";
+import { MyButton } from "module.slint";
+import { MyButton, MySwitch } from "module.slint";
+import { MyButton as OtherButton } from "module.slint";
+import {
+    MyButton,
+    /* ... */,
+    MySwitch as OtherSwitch,
+} from "module.slint";
 ```
 
 The following syntax is supported for exporting types:
@@ -352,4 +356,6 @@ path on disk:
       "otherlibrary": "/path/to/otherlib/index.slint",
   },
   ```
+  This can also be edited in the `.vscode/settings.json` file committed to your repository.
+  Relative paths are resolved against the workspace root.
 * With other editors, you can configure them to pass the `-L` argument to the `slint-lsp` just like for the slint-viewer.

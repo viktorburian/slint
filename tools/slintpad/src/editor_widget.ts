@@ -43,7 +43,7 @@ export function initialize(): Promise<void> {
         try {
             registerCustomProvider("slintpad", FILESYSTEM_PROVIDER);
 
-            initializeMonacoServices(
+            return initializeMonacoServices(
                 {
                     ...getConfigurationServiceOverride(),
                     ...getEditorServiceOverride(
@@ -66,115 +66,117 @@ export function initialize(): Promise<void> {
                         open: (_) => Promise.resolve(false),
                     },
                 },
-            ).then(() => {
-                monaco.languages.register({
-                    id: "slint",
-                    extensions: [".slint"],
-                    aliases: ["Slint", "slint"],
-                    mimetypes: ["application/slint"],
-                });
-                monaco.languages.setLanguageConfiguration("slint", {
-                    comments: {
-                        lineComment: "//",
-                        blockComment: ["/*", "*/"],
-                    },
-                    brackets: [
-                        ["{", "}"],
-                        ["[", "]"],
-                        ["(", ")"],
-                    ],
-                    autoClosingPairs: [
-                        {
-                            open: "{",
-                            close: "}",
+            )
+                .then(() => {
+                    monaco.languages.register({
+                        id: "slint",
+                        extensions: [".slint"],
+                        aliases: ["Slint", "slint"],
+                        mimetypes: ["application/slint"],
+                    });
+                    monaco.languages.setLanguageConfiguration("slint", {
+                        comments: {
+                            lineComment: "//",
+                            blockComment: ["/*", "*/"],
                         },
-                        {
-                            open: "[",
-                            close: "]",
+                        brackets: [
+                            ["{", "}"],
+                            ["[", "]"],
+                            ["(", ")"],
+                        ],
+                        autoClosingPairs: [
+                            {
+                                open: "{",
+                                close: "}",
+                            },
+                            {
+                                open: "[",
+                                close: "]",
+                            },
+                            {
+                                open: "(",
+                                close: ")",
+                            },
+                            {
+                                open: "'",
+                                close: "'",
+                                notIn: ["string", "comment"],
+                            },
+                            {
+                                open: '"',
+                                close: '"',
+                                notIn: ["string"],
+                            },
+                            {
+                                open: "`",
+                                close: "`",
+                                notIn: ["string", "comment"],
+                            },
+                            {
+                                open: "/**",
+                                close: " */",
+                                notIn: ["string"],
+                            },
+                        ],
+                        autoCloseBefore: ";:.,=}])>` \n\t",
+                        surroundingPairs: [
+                            {
+                                open: "{",
+                                close: "}",
+                            },
+                            {
+                                open: "[",
+                                close: "]",
+                            },
+                            {
+                                open: "(",
+                                close: ")",
+                            },
+                            {
+                                open: "'",
+                                close: "'",
+                            },
+                            {
+                                open: '"',
+                                close: '"',
+                            },
+                            {
+                                open: "`",
+                                close: "`",
+                            },
+                            {
+                                open: "/**",
+                                close: " */",
+                            },
+                        ],
+                        folding: {
+                            markers: {
+                                start: new RegExp("^\\s*//\\s*#?region\\b"),
+                                end: new RegExp("^\\s*//\\s*#?endregion\\b"),
+                            },
                         },
-                        {
-                            open: "(",
-                            close: ")",
-                        },
-                        {
-                            open: "'",
-                            close: "'",
-                            notIn: ["string", "comment"],
-                        },
-                        {
-                            open: '"',
-                            close: '"',
-                            notIn: ["string"],
-                        },
-                        {
-                            open: "`",
-                            close: "`",
-                            notIn: ["string", "comment"],
-                        },
-                        {
-                            open: "/**",
-                            close: " */",
-                            notIn: ["string"],
-                        },
-                    ],
-                    autoCloseBefore: ";:.,=}])>` \n\t",
-                    surroundingPairs: [
-                        {
-                            open: "{",
-                            close: "}",
-                        },
-                        {
-                            open: "[",
-                            close: "]",
-                        },
-                        {
-                            open: "(",
-                            close: ")",
-                        },
-                        {
-                            open: "'",
-                            close: "'",
-                        },
-                        {
-                            open: '"',
-                            close: '"',
-                        },
-                        {
-                            open: "`",
-                            close: "`",
-                        },
-                        {
-                            open: "/**",
-                            close: " */",
-                        },
-                    ],
-                    folding: {
-                        markers: {
-                            start: new RegExp("^\\s*//\\s*#?region\\b"),
-                            end: new RegExp("^\\s*//\\s*#?endregion\\b"),
-                        },
-                    },
-                    wordPattern: new RegExp(
-                        "(-?\\d*\\.\\d\\w*)|([^\\`\\~\\!\\@\\#\\%\\^\\&\\*\\(\\)\\=\\+\\[\\{\\]\\}\\\\\\|\\;\\:\\'\\\"\\,\\.\\<\\>\\/\\?\\s]+)",
-                    ),
-                    indentationRules: {
-                        increaseIndentPattern: new RegExp(
-                            "^((?!\\/\\/).)*(\\{[^}\"'`]*|\\([^)\"'`]*|\\[[^\\]\"'`]*)$",
+                        wordPattern: new RegExp(
+                            "(-?\\d*\\.\\d\\w*)|([^\\`\\~\\!\\@\\#\\%\\^\\&\\*\\(\\)\\=\\+\\[\\{\\]\\}\\\\\\|\\;\\:\\'\\\"\\,\\.\\<\\>\\/\\?\\s]+)",
                         ),
-                        decreaseIndentPattern: new RegExp(
-                            "^((?!.*?\\/\\*).*\\*/)?\\s*[\\}\\]].*$",
-                        ),
-                    },
-                });
-                monaco.languages.onLanguage("slint", () => {
-                    monaco.languages.setMonarchTokensProvider(
-                        "slint",
-                        slint_language,
-                    );
-                });
+                        indentationRules: {
+                            increaseIndentPattern: new RegExp(
+                                "^((?!\\/\\/).)*(\\{[^}\"'`]*|\\([^)\"'`]*|\\[[^\\]\"'`]*)$",
+                            ),
+                            decreaseIndentPattern: new RegExp(
+                                "^((?!.*?\\/\\*).*\\*/)?\\s*[\\}\\]].*$",
+                            ),
+                        },
+                    });
+                    monaco.languages.onLanguage("slint", () => {
+                        monaco.languages.setMonarchTokensProvider(
+                            "slint",
+                            slint_language,
+                        );
+                    });
 
-                resolve();
-            });
+                    resolve();
+                })
+                .catch(reject);
         } catch (e) {
             reject(e);
         }
@@ -242,9 +244,8 @@ export class KnownUrlMapper implements UrlMapper {
                 monaco.Uri.parse(mapped_url) ??
                 monaco.Uri.parse("file:///broken_url")
             );
-        } else {
-            return uri;
         }
+        return uri;
     }
 }
 
@@ -314,6 +315,10 @@ class EditorPaneWidget extends Widget {
             model: model_ref.object.textEditorModel,
         });
 
+        this.#editor.onDidFocusEditorText((_) => {
+            EDITOR_WIDGET!.switch_to_pane(this);
+        });
+
         this.setFlag(Widget.Flag.DisallowLayout);
         this.addClass("content");
         this.addClass("editor");
@@ -321,7 +326,7 @@ class EditorPaneWidget extends Widget {
             model_ref.object.textEditorModel?.uri,
         );
         this.title.closable = false;
-        this.title.caption = `Slint Code Editor`;
+        this.title.caption = "Slint Code Editor";
     }
 
     get editor(): monaco.editor.IStandaloneCodeEditor {
@@ -358,7 +363,7 @@ export class EditorWidget extends Widget {
     #layout: BoxLayout;
     #tab_map: Map<string, EditorPaneWidget> = new Map();
     #tab_panel: TabPanel | null = null;
-    #open_files: [monaco.IDisposable] = [];
+    #open_files: monaco.IDisposable[] = [];
 
     #client: MonacoLanguageClient | null = null;
 
@@ -374,7 +379,7 @@ export class EditorWidget extends Widget {
 
         this.title.label = "Editor";
         this.title.closable = false;
-        this.title.caption = `Slint code editor`;
+        this.title.caption = "Slint code editor";
 
         this.#layout = new BoxLayout({ spacing: 0 });
         super.layout = this.#layout;
@@ -389,52 +394,20 @@ export class EditorWidget extends Widget {
 
         this.clear_editors();
 
-        this.open_default_content();
+        void this.open_default_content();
+    }
 
-        monaco.editor.registerEditorOpener({
-            openCodeEditor: (_source, uri, position) => {
-                const pane = this.#tab_map.get(uri.toString());
-                if (pane) {
-                    this.#tab_panel!.currentWidget = pane;
-
-                    pane.editor.focus();
-
-                    if (position instanceof monaco.Position) {
-                        pane.editor.setSelection(
-                            {
-                                startLineNumber: position.lineNumber,
-                                startColumn: position.column,
-                                endLineNumber: position.lineNumber,
-                                endColumn: position.column,
-                            },
-                            "lsp:gotoDefinition",
-                        );
-                        pane.editor.revealPositionNearTop(
-                            position,
-                            monaco.editor.ScrollType.Immediate,
-                        );
-                    } else if (position instanceof monaco.Range) {
-                        pane.editor.setSelection(
-                            position,
-                            "lsp:gotoDefinition",
-                        );
-                        pane.editor.revealRangeNearTop(
-                            position,
-                            monaco.editor.ScrollType.Immediate,
-                        );
-                    }
-
-                    return true;
-                } else {
-                    return false;
-                }
-            },
-        });
+    switch_to_pane(pane: EditorPaneWidget) {
+        this.#tab_panel!.currentWidget = pane;
     }
 
     private async open_default_content() {
         const params = new URLSearchParams(window.location.search);
-        const code = params.get("snippet");
+        const compressed = params.get("gz");
+        let code = params.get("snippet");
+        if (compressed) {
+            code = await decompress(compressed);
+        }
         const load_url = params.get("load_url");
         const load_demo = params.get("load_demo");
 
@@ -446,10 +419,11 @@ export class EditorWidget extends Widget {
                     code,
                 ),
             );
-        } else if (load_url) {
-            return this.project_from_url(load_url);
+        }
+        if (load_url) {
+            void this.project_from_url(load_url);
         } else {
-            return this.set_demo(load_demo ?? "");
+            void this.set_demo(load_demo ?? "");
         }
     }
 
@@ -518,7 +492,7 @@ export class EditorWidget extends Widget {
         return Promise.resolve(pane.editor);
     }
 
-    public async map_url(url_: string): Promise<string | undefined> {
+    public map_url(url_: string): Promise<string | undefined> {
         const js_url = new URL(url_);
 
         const absolute_uri = monaco.Uri.parse(js_url.toString());
@@ -531,7 +505,7 @@ export class EditorWidget extends Widget {
             this.#extra_file_urls[file] = mapped_string;
         }
 
-        return mapped_string;
+        return Promise.resolve(mapped_string);
     }
 
     private get current_editor_pane(): EditorPaneWidget {
@@ -565,9 +539,7 @@ export class EditorWidget extends Widget {
 
         this.clear_editors();
 
-        return Promise.resolve(
-            (await this.open_tab_from_url(monaco.Uri.parse(uri)))[0],
-        );
+        return (await this.open_tab_from_url(monaco.Uri.parse(uri)))[0];
     }
 
     private async open_tab_from_url(
@@ -587,24 +559,6 @@ export class EditorWidget extends Widget {
         );
     }
 
-    public known_demos(): [string, string][] {
-        return [
-            ["", "Hello World!"],
-            ["examples/gallery/gallery.slint", "Gallery"],
-            ["demos/home-automation/ui/demo-debug.slint", "Home Automation"],
-            ["demos/usecases/ui/app.slint", "Use Cases Demo"],
-            ["demos/printerdemo/ui/printerdemo.slint", "Printer Demo"],
-            ["demos/energy-monitor/ui/desktop_window.slint", "Energy Monitor"],
-            ["examples/todo/ui/todo.slint", "Todo Demo"],
-            ["examples/iot-dashboard/main.slint", "IOT Dashboard"],
-            ["examples/fancy-switches/demo.slint", "Fancy Switches"],
-            ["examples/dial/dial.slint", "Fanncy Dial"],
-            ["examples/orbit-animation/demo.slint", "Fancy Animations"],
-            ["examples/repeater/demo.slint", "Fancy Repeater"],
-            ["examples/sprite-sheet/demo.slint", "Spritesheet Demo"],
-        ];
-    }
-
     public add_empty_file_to_project(name: string) {
         let abs_name = name;
         if (!abs_name.startsWith("/")) {
@@ -622,7 +576,7 @@ export class EditorWidget extends Widget {
         return true;
     }
 
-    public async set_demo(location: string): Promise<monaco.Uri | null> {
+    public set_demo(location: string): Promise<monaco.Uri | null> {
         if (location) {
             const default_tag = "XXXX_DEFAULT_TAG_XXXX";
             let tag = default_tag.startsWith("XXXX_DEFAULT_TAG_")
@@ -641,9 +595,8 @@ export class EditorWidget extends Widget {
             return this.project_from_url(
                 `https://raw.githubusercontent.com/slint-ui/slint/${tag}/${location}`,
             );
-        } else {
-            return Promise.resolve(this.open_hello_world());
         }
+        return Promise.resolve(this.open_hello_world());
     }
 
     public get open_document_urls(): string[] {
@@ -718,4 +671,40 @@ export class EditorWidget extends Widget {
 
         return [internal_uri, doc];
     }
+
+    public async copy_permalink_to_clipboard() {
+        const params = new URLSearchParams();
+        params.set("gz", await compress(this.current_editor_content));
+        const url = new URL(window.location.href);
+        url.search = params.toString();
+        navigator.clipboard.writeText(url.toString());
+    }
+}
+
+// Return an URL-compatible base64 encoded string
+async function compress(text: string): Promise<string> {
+    const input = new TextEncoder().encode(text);
+    const compressedStream = new Blob([input])
+        .stream()
+        .pipeThrough(new CompressionStream("gzip"));
+
+    const compressedBuffer = await new Response(compressedStream).arrayBuffer();
+    const binary = String.fromCharCode(...new Uint8Array(compressedBuffer));
+    const b64 = btoa(binary);
+    return b64.replace(/\+/g, "-").replace(/\//g, "_");
+}
+
+async function decompress(b64: string): Promise<string> {
+    const base64 = b64.replace(/-/g, "+").replace(/_/g, "/");
+    const binary = atob(base64);
+    const compressed = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+
+    const decompressedStream = new Blob([compressed])
+        .stream()
+        .pipeThrough(new DecompressionStream("gzip"));
+
+    const decompressedBuffer = await new Response(
+        decompressedStream,
+    ).arrayBuffer();
+    return new TextDecoder().decode(decompressedBuffer);
 }

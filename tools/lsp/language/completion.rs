@@ -119,8 +119,8 @@ pub(crate) fn completion_at(
     } else if let Some(n) = syntax_nodes::Binding::new(node.clone()) {
         if let Some(colon) = n.child_token(SyntaxKind::Colon) {
             if offset >= colon.text_range().end() {
-                return with_lookup_ctx(document_cache, node, |ctx| {
-                    resolve_expression_scope(ctx, document_cache, snippet_support).map(Into::into)
+                return with_lookup_ctx(document_cache, node, Some(offset), |ctx| {
+                    resolve_expression_scope(ctx, document_cache, snippet_support)
                 })?;
             }
         }
@@ -140,7 +140,7 @@ pub(crate) fn completion_at(
         if offset < double_arrow_range.end() {
             return None;
         }
-        return with_lookup_ctx(document_cache, node, |ctx| {
+        return with_lookup_ctx(document_cache, node, Some(offset), |ctx| {
             resolve_expression_scope(ctx, document_cache, snippet_support)
         })?;
     } else if let Some(n) = syntax_nodes::CallbackConnection::new(node.clone()) {
@@ -173,15 +173,15 @@ pub(crate) fn completion_at(
         node.kind(),
         SyntaxKind::Type | SyntaxKind::ArrayType | SyntaxKind::ObjectType | SyntaxKind::ReturnType
     ) {
-        return resolve_type_scope(token, document_cache).map(Into::into);
+        return resolve_type_scope(token, document_cache);
     } else if syntax_nodes::PropertyDeclaration::new(node.clone()).is_some() {
         if token.kind() == SyntaxKind::LAngle {
-            return resolve_type_scope(token, document_cache).map(Into::into);
+            return resolve_type_scope(token, document_cache);
         }
     } else if let Some(n) = syntax_nodes::CallbackDeclaration::new(node.clone()) {
         let paren = n.child_token(SyntaxKind::LParent)?;
         if token.token.text_range().start() >= paren.token.text_range().end() {
-            return resolve_type_scope(token, document_cache).map(Into::into);
+            return resolve_type_scope(token, document_cache);
         }
     } else if matches!(
         node.kind(),
@@ -222,8 +222,8 @@ pub(crate) fn completion_at(
             );
         }
 
-        return with_lookup_ctx(document_cache, node, |ctx| {
-            resolve_expression_scope(ctx, document_cache, snippet_support).map(Into::into)
+        return with_lookup_ctx(document_cache, node, Some(offset), |ctx| {
+            resolve_expression_scope(ctx, document_cache, snippet_support)
         })?;
     } else if let Some(q) = syntax_nodes::QualifiedName::new(node.clone()) {
         match q.parent()?.kind() {
@@ -260,18 +260,17 @@ pub(crate) fn completion_at(
                 return Some(result);
             }
             SyntaxKind::Type => {
-                return resolve_type_scope(token, document_cache).map(Into::into);
+                return resolve_type_scope(token, document_cache);
             }
             SyntaxKind::Expression => {
-                return with_lookup_ctx(document_cache, node, |ctx| {
+                return with_lookup_ctx(document_cache, node, Some(offset), |ctx| {
                     let it = q.children_with_tokens().filter_map(|t| t.into_token());
                     let mut it = it.skip_while(|t| {
                         t.kind() != SyntaxKind::Identifier && t.token != token.token
                     });
                     let first = it.next();
-                    if first.as_ref().map_or(true, |f| f.token == token.token) {
-                        return resolve_expression_scope(ctx, document_cache, snippet_support)
-                            .map(Into::into);
+                    if first.as_ref().is_none_or(|f| f.token == token.token) {
+                        return resolve_expression_scope(ctx, document_cache, snippet_support);
                     }
                     let first = i_slint_compiler::parser::normalize_identifier(first?.text());
                     let global = i_slint_compiler::lookup::global_lookup();
@@ -398,10 +397,10 @@ pub(crate) fn completion_at(
         if parent.kind() == SyntaxKind::PropertyChangedCallback {
             return properties_for_changed_callbacks(parent, document_cache);
         }
-    } else if node.kind() == SyntaxKind::PropertyChangedCallback {
-        if offset > node.child_token(SyntaxKind::Identifier)?.text_range().end() {
-            return properties_for_changed_callbacks(node, document_cache);
-        }
+    } else if node.kind() == SyntaxKind::PropertyChangedCallback
+        && offset > node.child_token(SyntaxKind::Identifier)?.text_range().end()
+    {
+        return properties_for_changed_callbacks(node, document_cache);
     }
     None
 }
@@ -553,7 +552,7 @@ fn resolve_element_scope(
             match element_type {
                 ElementType::Component(component) => {
                     let base_type = match &*component.child_insertion_point.borrow() {
-                        Some(insert_in) => insert_in.0.borrow().base_type.clone(),
+                        Some(insert_in) => insert_in.parent.borrow().base_type.clone(),
                         None => {
                             let base_type = component.root_element.borrow().base_type.clone();
                             if base_type == tr.empty_type() {
@@ -1327,6 +1326,146 @@ mod tests {
         res.iter().find(|ci| ci.label == "xx").unwrap();
         res.iter().find(|ci| ci.label == "yy").unwrap();
         assert_eq!(res.len(), 2);
+    }
+
+    #[test]
+    fn local_variables_function() {
+        let source = r#"
+            component Foo {
+                function bar() {
+                    let foo1 = 42;
+                    let foo2: int = 43;
+                    🔺
+                }
+            }
+        "#;
+        let res = get_completions(source).unwrap();
+        assert!(res.iter().any(|ci| ci.label == "foo1"));
+        assert!(res.iter().any(|ci| ci.label == "foo2"));
+    }
+
+    #[test]
+    fn local_variables_callback() {
+        let source = r#"
+            component Foo {
+                callback bar;
+                bar => {
+                    let foo1 = 42;
+                    let foo2: int = 43;
+                    🔺
+                }
+            }
+        "#;
+        let res = get_completions(source).unwrap();
+        assert!(res.iter().any(|ci| ci.label == "foo1" && ci.detail.as_ref().unwrap() == "float"));
+        assert!(res.iter().any(|ci| ci.label == "foo2" && ci.detail.as_ref().unwrap() == "int"));
+    }
+
+    #[test]
+    fn local_variables_changed_callback() {
+        let source = r#"
+            component Foo inherits Rectangle {
+                property<int> foo;
+
+                changed foo => {
+                    let foo1 = 42;
+                    let foo2: int = 43;
+                    🔺
+                }
+            }
+        "#;
+        let res = get_completions(source).unwrap();
+        assert!(res.iter().any(|ci| ci.label == "foo1"));
+        assert!(res.iter().any(|ci| ci.label == "foo2"));
+    }
+
+    #[test]
+    fn local_variables_binding() {
+        let source: &'static str = r#"
+            component Foo inherits Rectangle {
+                background: {
+                    let c = blue;
+                    🔺
+                    return c;
+                }
+            }
+        "#;
+        let res = get_completions(source).unwrap();
+        assert!(res.iter().any(|ci| ci.label == "c" && ci.detail.as_ref().unwrap() == "color"));
+    }
+
+    #[test]
+    fn local_variables_nested_scope() {
+        let source = r#"
+            component Foo {
+                function bar() {
+                    let foo1 = 42;
+                    let foo2: int = 43;
+
+                    if (true) {
+                        🔺
+                    }
+                }
+            }
+        "#;
+        let res = get_completions(source).unwrap();
+        assert!(res.iter().any(|ci| ci.label == "foo1" && ci.detail.as_ref().unwrap() == "float"));
+        assert!(res.iter().any(|ci| ci.label == "foo2" && ci.detail.as_ref().unwrap() == "int"));
+    }
+
+    #[test]
+    fn local_variables_out_of_function_scope() {
+        let source = r#"
+            component Foo {
+                function foo() {
+                    let foo1 = 42;
+                    let foo2: int = 43;
+                }
+
+                function bar() {
+                    🔺
+                }
+            }
+        "#;
+        let res = get_completions(source).unwrap();
+        assert!(!res.iter().any(|ci| ci.label == "foo1"));
+        assert!(!res.iter().any(|ci| ci.label == "foo2"));
+    }
+
+    #[test]
+    fn local_variables_out_of_scope() {
+        let source = r#"
+            component Foo {
+                function foo() {
+                    if (true) {
+                        let foo1 = 42;
+                        let foo2: int = 43;
+                    }
+
+                    🔺
+                }
+            }
+        "#;
+        let res = get_completions(source).unwrap();
+        assert!(!res.iter().any(|ci| ci.label == "foo1"));
+        assert!(!res.iter().any(|ci| ci.label == "foo2"));
+    }
+
+    #[test]
+    fn local_variables_undeclared() {
+        let source = r#"
+            component Foo {
+                function foo() {
+                    🔺
+
+                    let foo1 = 42;
+                    let foo2: int = 43;
+                }
+            }
+        "#;
+        let res = get_completions(source).unwrap();
+        assert!(!res.iter().any(|ci| ci.label == "foo1"));
+        assert!(!res.iter().any(|ci| ci.label == "foo2"));
     }
 
     #[test]

@@ -16,6 +16,7 @@ use i_slint_core::item_rendering::{
     CachedRenderingData, ItemCache, ItemRenderer, RenderBorderRectangle, RenderImage,
     RenderRectangle, RenderText,
 };
+use i_slint_core::item_tree::ParentItemTraversalMode;
 use i_slint_core::item_tree::{ItemTreeRc, ItemTreeRef};
 use i_slint_core::items::{
     self, ColorScheme, FillRule, ImageRendering, ItemRc, ItemRef, Layer, LineCap, MouseCursor,
@@ -173,7 +174,7 @@ cpp! {{
             //       This confuses Slint, so eat this event.
             //
             //       One example is a popup is shown in the close event that
-            //       then ignores the the close request to ask the user what to
+            //       then ignores the close request to ask the user what to
             //       do. The stray release event will then close the popup
             //       straight away
             //
@@ -182,7 +183,7 @@ cpp! {{
             if (!isMouseButtonDown && rust_window == this->rust_window) {
                 return;
             }
-            isMouseButtonDown = false;
+            isMouseButtonDown = event->button() != Qt::NoButton;
 
             int button = event->button();
             rust!(Slint_mouseReleaseEvent [rust_window: &QtWindow as "void*", pos: qttypes::QPoint as "QPoint", button: u32 as "int" ] {
@@ -578,7 +579,7 @@ fn into_qbrush(
             cpp_class!(unsafe struct QRadialGradient as "QRadialGradient");
             let mut qrg = cpp! {
                 unsafe [width as "qreal", height as "qreal"] -> QRadialGradient as "QRadialGradient" {
-                    QRadialGradient qrg(width / 2, height / 2, (width + height) / 4);
+                    QRadialGradient qrg(width / 2, height / 2, sqrt(width * width + height * height) / 2);
                     return qrg;
                 }
             };
@@ -592,6 +593,30 @@ fn into_qbrush(
             }
             cpp! {unsafe [qrg as "QRadialGradient"] -> qttypes::QBrush as "QBrush" {
                 return QBrush(qrg);
+            }}
+        }
+        i_slint_core::Brush::ConicGradient(g) => {
+            cpp_class!(unsafe struct QConicalGradient as "QConicalGradient");
+            // QConicalGradient uses angles where 0 degrees is at 3 o'clock (east)
+            // We want gradient position 0 at 12 o'clock (north), so start at -90°
+            let mut qcg = cpp! {
+                unsafe [width as "qreal", height as "qreal"] -> QConicalGradient as "QConicalGradient" {
+                    QConicalGradient qcg(width / 2, height / 2, 90);
+                    return qcg;
+                }
+            };
+            let count = g.stops().count();
+            for (idx, s) in g.stops().enumerate() {
+                // Qt's conical gradient goes counter-clockwise, but Slint expects clockwise
+                // So we need to invert the positions: Qt position = 1.0 - Slint position
+                let pos: f32 = 1.0 - mangle_position(s.position, idx, count);
+                let color: u32 = s.color.as_argb_encoded();
+                cpp! {unsafe [mut qcg as "QConicalGradient", pos as "float", color as "QRgb"] {
+                    qcg.setColorAt(pos, QColor::fromRgba(color));
+                }};
+            }
+            cpp! {unsafe [qcg as "QConicalGradient"] -> qttypes::QBrush as "QBrush" {
+                return QBrush(qcg);
             }}
         }
         _ => qttypes::QBrush::default(),
@@ -695,14 +720,14 @@ impl ItemRenderer for QtItemRenderer<'_> {
     fn draw_text(
         &mut self,
         text: Pin<&dyn RenderText>,
-        _: &ItemRc,
+        self_rc: &ItemRc,
         size: LogicalSize,
         _: &CachedRenderingData,
     ) {
         let rect: qttypes::QRectF = check_geometry!(size);
         let fill_brush: qttypes::QBrush = into_qbrush(text.color(), rect.width, rect.height);
         let mut string: qttypes::QString = text.text().as_str().into();
-        let font: QFont = get_font(text.font_request(WindowInner::from_pub(self.window)));
+        let font: QFont = get_font(text.font_request(self_rc));
         let (horizontal_alignment, vertical_alignment) = text.alignment();
         let alignment = match horizontal_alignment {
             TextHorizontalAlignment::Left => key_generated::Qt_AlignmentFlag_AlignLeft,
@@ -872,14 +897,13 @@ impl ItemRenderer for QtItemRenderer<'_> {
     fn draw_text_input(
         &mut self,
         text_input: Pin<&items::TextInput>,
-        _: &ItemRc,
+        self_rc: &ItemRc,
         size: LogicalSize,
     ) {
         let rect: qttypes::QRectF = check_geometry!(size);
         let fill_brush: qttypes::QBrush = into_qbrush(text_input.color(), rect.width, rect.height);
 
-        let font: QFont =
-            get_font(text_input.font_request(&WindowInner::from_pub(self.window).window_adapter()));
+        let font: QFont = get_font(text_input.font_request(self_rc));
         let flags = match text_input.horizontal_alignment() {
             TextHorizontalAlignment::Left => key_generated::Qt_AlignmentFlag_AlignLeft,
             TextHorizontalAlignment::Center => key_generated::Qt_AlignmentFlag_AlignHCenter,
@@ -1106,18 +1130,10 @@ impl ItemRenderer for QtItemRenderer<'_> {
                 if blur_radius > 0. {
                     cpp! {
                     unsafe[img as "QImage*", blur_radius as "float"] -> qttypes::QPixmap as "QPixmap" {
-                        class PublicGraphicsBlurEffect : public QGraphicsBlurEffect {
-                        public:
-                            // Make public what's protected
-                            using QGraphicsBlurEffect::draw;
-                        };
-
-                        // Need a scene for the effect source private to draw()
                         QGraphicsScene scene;
-
                         auto pixmap_item = scene.addPixmap(QPixmap::fromImage(*img));
 
-                        auto blur_effect = new PublicGraphicsBlurEffect;
+                        auto blur_effect = new QGraphicsBlurEffect;
                         blur_effect->setBlurRadius(blur_radius);
                         blur_effect->setBlurHints(QGraphicsBlurEffect::QualityHint);
 
@@ -1129,8 +1145,9 @@ impl ItemRenderer for QtItemRenderer<'_> {
                         blurred_scene.fill(Qt::transparent);
 
                         QPainter p(&blurred_scene);
-                        p.translate(blur_radius, blur_radius);
-                        blur_effect->draw(&p);
+                        scene.render(&p,
+                            QRectF(0, 0, blurred_scene.width(), blurred_scene.height()),
+                            QRectF(-blur_radius, -blur_radius, blurred_scene.width(), blurred_scene.height()));
                         p.end();
 
                         return QPixmap::fromImage(blurred_scene);
@@ -1353,8 +1370,6 @@ impl QtItemRenderer<'_> {
         size: LogicalSize,
         image: Pin<&dyn i_slint_core::item_rendering::RenderImage>,
     ) {
-        let dest_rect: qttypes::QRectF = check_geometry!(size);
-
         let source_rect = image.source_clip();
 
         let pixmap: qttypes::QPixmap = self.cache.get_or_update_cache_entry(item_rc, || {
@@ -1399,8 +1414,12 @@ impl QtItemRenderer<'_> {
                 |mut pixmap: qttypes::QPixmap| {
                     let colorize = image.colorize();
                     if !colorize.is_transparent() {
-                        let brush: qttypes::QBrush =
-                            into_qbrush(colorize, dest_rect.width, dest_rect.height);
+                        let pixmap_size = pixmap.size();
+                        let brush: qttypes::QBrush = into_qbrush(
+                            colorize,
+                            pixmap_size.width.into(),
+                            pixmap_size.height.into(),
+                        );
                         cpp!(unsafe [mut pixmap as "QPixmap", brush as "QBrush"] {
                             QPainter p(&pixmap);
                             p.setCompositionMode(QPainter::CompositionMode_SourceIn);
@@ -1517,6 +1536,8 @@ impl QtItemRenderer<'_> {
                 bottom_left_radius as "float",
                 bottom_right_radius as "float",
                 mut rect as "QRectF"] {
+            (*painter)->save();
+            auto cleanup = qScopeGuard([&] { (*painter)->restore(); });
             (*painter)->setBrush(brush);
             QPen pen = border_width > 0 ? QPen(border_color, border_width, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin) : Qt::NoPen;
             if (top_left_radius <= 0 && top_right_radius <= 0 && bottom_left_radius <= 0 && bottom_right_radius <= 0) {
@@ -1713,7 +1734,7 @@ impl QtWindow {
     }
 
     /// Return the QWidget*
-    fn widget_ptr(&self) -> NonNull<()> {
+    pub fn widget_ptr(&self) -> NonNull<()> {
         unsafe { std::mem::transmute_copy::<QWidgetPtr, NonNull<_>>(&self.widget_ptr) }
     }
 
@@ -2282,7 +2303,7 @@ impl i_slint_core::renderer::RendererSealed for QtWindow {
                 return string.toUtf8().size();
             QTextLine textLine = layout.lineAt(line);
             int cur;
-            if (pos.x() > textLine.naturalTextWidth()) {
+            if (pos.x() >= textLine.naturalTextWidth()) {
                 cur = textLine.textStart() + textLine.textLength();
                 // cur is one past the last character of the line (eg, the \n or space).
                 // Go one back to get back on this line.
@@ -2432,7 +2453,7 @@ fn accessible_item(item: Option<ItemRc>) -> Option<ItemRc> {
         if c.is_accessible() {
             return Some(c);
         } else {
-            current = c.parent_item();
+            current = c.parent_item(ParentItemTraversalMode::StopAtPopups);
         }
     }
     None
@@ -2538,7 +2559,10 @@ thread_local! {
 /// Called by C++'s TimerHandler::timerEvent, or every time a timer might have been started
 pub(crate) fn timer_event() {
     i_slint_core::platform::update_timers_and_animations();
+    restart_timer();
+}
 
+pub(crate) fn restart_timer() {
     let timeout = i_slint_core::timers::TimerList::next_timeout().map(|instant| {
         let now = std::time::Instant::now();
         let instant: std::time::Instant = instant.into();
@@ -2671,7 +2695,7 @@ pub(crate) mod ffi {
 
     use super::QtWindow;
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_qt_get_widget(
         window_adapter: &i_slint_core::window::WindowAdapterRc,
     ) -> *mut c_void {

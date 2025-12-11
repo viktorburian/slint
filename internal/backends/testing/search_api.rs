@@ -4,13 +4,13 @@
 use core::ops::ControlFlow;
 use i_slint_core::accessibility::{AccessibilityAction, AccessibleStringProperty};
 use i_slint_core::api::{ComponentHandle, LogicalPosition};
-use i_slint_core::item_tree::{ItemTreeRc, ItemWeak};
+use i_slint_core::item_tree::{ItemTreeRc, ItemWeak, ParentItemTraversalMode};
 use i_slint_core::items::{ItemRc, Opacity};
 use i_slint_core::window::WindowInner;
 use i_slint_core::SharedString;
 
 fn warn_missing_debug_info() {
-    i_slint_core::debug_log!("The use of the ElementHandle API requires the presence of debug info in Slint compiler generated code. Set the `SLINT_EMIT_DEBUG_INFO=1` environment variable at application build time")
+    i_slint_core::debug_log!("The use of the ElementHandle API requires the presence of debug info in Slint compiler generated code. Set the `SLINT_EMIT_DEBUG_INFO=1` environment variable at application build time or use `compile_with_config` and `with_debug_info` with `slint_build`'s `CompilerConfiguration`")
 }
 
 mod internal {
@@ -760,7 +760,7 @@ impl ElementHandle {
             .upgrade()
             .map(|mut item| {
                 let mut opacity = 1.0;
-                while let Some(parent) = item.parent_item() {
+                while let Some(parent) = item.parent_item(ParentItemTraversalMode::StopAtPopups) {
                     if let Some(opacity_item) =
                         i_slint_core::items::ItemRef::downcast_pin::<Opacity>(item.borrow())
                     {

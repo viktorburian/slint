@@ -11,9 +11,11 @@ and keyboard input.
 
  - OpenGL via KMS/DRI.
  - Vulkan via the Vulkan KHR Display Extension.
- - DRM dumb buffers for software rendering.
+ - DRM dumb buffers for software rendering, as well as legacy LinuxFB rendering.
  - libinput/libudev for input event handling from mice, touch screens, or keyboards.
  - libseat for GPU and input device access without requiring root access. (optional)
+
+## Dependencies
 
 For compilation, pkg-config is used to determine the location of the following required system libraries:
 
@@ -30,6 +32,8 @@ If you don't have `libseat` available on your target system, then instead of sel
 in exchange requires running the application as a user that's privileged to access all input and DRM/KMS device
 files; typically that's the root user.
 :::
+
+## Renderers
 
 The LinuxKMS backend supports different renderers. They can be explicitly selected for use through the
 `SLINT_BACKEND` environment variable.
@@ -156,3 +160,10 @@ echo 'ENV{LIBINPUT_CALIBRATION_MATRIX}="0 -1 1 1 0 0"' > /etc/udev/rules.d/libin
 udevadm control --reload-rules
 udevadm trigger
 ```
+
+## Legacy LinuxFB Interface
+
+For software rendering, DRM dumb buffers are the preferred default way of posting frame buffers to the display. If DRM dumb buffers are not supported, the LinuxKMS backend falls back to using the Linux legacy
+framebuffer interface (`/dev/fbX`).
+
+To override this default and use only the legacy framebuffer interface, set the `SLINT_BACKEND_LINUXFB=1` environment variable.

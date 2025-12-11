@@ -262,19 +262,20 @@ pub fn reserved_properties() -> impl Iterator<Item = (&'static str, Type, Proper
 }
 
 /// lookup reserved property injected in every item
-pub fn reserved_property(name: &str) -> PropertyLookupResult {
+pub fn reserved_property(name: &str) -> PropertyLookupResult<'_> {
     thread_local! {
-        static RESERVED_PROPERTIES: HashMap<&'static str, (Type, PropertyVisibility)>
-            = reserved_properties().map(|(name, ty, visibility)| (name, (ty, visibility))).collect();
+        static RESERVED_PROPERTIES: HashMap<&'static str, (Type, PropertyVisibility, Option<BuiltinFunction>)>
+            = reserved_properties().map(|(name, ty, visibility)| (name, (ty, visibility, reserved_member_function(name)))).collect();
     }
     if let Some(result) = RESERVED_PROPERTIES.with(|reserved| {
-        reserved.get(name).map(|(ty, visibility)| PropertyLookupResult {
+        reserved.get(name).map(|(ty, visibility, builtin_function)| PropertyLookupResult {
             property_type: ty.clone(),
             resolved_name: name.into(),
             is_local_to_component: false,
             is_in_direct_base: false,
             property_visibility: *visibility,
             declared_pure: None,
+            builtin_function: builtin_function.clone(),
         })
     }) {
         return result;
@@ -293,20 +294,14 @@ pub fn reserved_property(name: &str) -> PropertyLookupResult {
                             is_in_direct_base: false,
                             property_visibility: crate::object_tree::PropertyVisibility::InOut,
                             declared_pure: None,
+                            builtin_function: None,
                         };
                     }
                 }
             }
         }
     }
-    PropertyLookupResult {
-        resolved_name: name.into(),
-        property_type: Type::Invalid,
-        is_local_to_component: false,
-        is_in_direct_base: false,
-        property_visibility: crate::object_tree::PropertyVisibility::Private,
-        declared_pure: None,
-    }
+    PropertyLookupResult::invalid(name.into())
 }
 
 /// These member functions are injected in every time
@@ -363,13 +358,13 @@ impl TypeRegister {
 
     /// Insert a type into the type register with its builtin type name.
     ///
-    /// Returns false if a it replaced an existing type.
+    /// Returns false if it replaced an existing type.
     pub fn insert_type(&mut self, t: Type) -> bool {
         self.types.insert(t.to_smolstr(), t).is_none()
     }
     /// Insert a type into the type register with a specified name.
     ///
-    /// Returns false if a it replaced an existing type.
+    /// Returns false if it replaced an existing type.
     pub fn insert_type_with_name(&mut self, t: Type, name: SmolStr) -> bool {
         self.types.insert(name, t).is_none()
     }
@@ -413,6 +408,7 @@ impl TypeRegister {
             ($pub_type:ident, SharedString) => { Type::String };
             ($pub_type:ident, Image) => { Type::Image };
             ($pub_type:ident, Coord) => { Type::LogicalLength };
+            ($pub_type:ident, LogicalPosition) => { logical_point_type() };
             ($pub_type:ident, KeyboardModifiers) => { $pub_type.clone() };
             ($pub_type:ident, $_:ident) => {
                 BUILTIN.with(|e| Type::Enumeration(e.enums.$pub_type.clone()))
@@ -476,17 +472,13 @@ impl TypeRegister {
                 let popup = Rc::get_mut(b).unwrap();
                 popup.properties.insert(
                     "show".into(),
-                    BuiltinPropertyInfo::new(Type::Function(BuiltinFunction::ShowPopupWindow.ty())),
+                    BuiltinPropertyInfo::from(BuiltinFunction::ShowPopupWindow),
                 );
-                popup.member_functions.insert("show".into(), BuiltinFunction::ShowPopupWindow);
 
                 popup.properties.insert(
                     "close".into(),
-                    BuiltinPropertyInfo::new(Type::Function(
-                        BuiltinFunction::ClosePopupWindow.ty(),
-                    )),
+                    BuiltinPropertyInfo::from(BuiltinFunction::ClosePopupWindow),
                 );
-                popup.member_functions.insert("close".into(), BuiltinFunction::ClosePopupWindow);
 
                 popup.properties.get_mut("close-on-click").unwrap().property_visibility =
                     PropertyVisibility::Constexpr;
@@ -497,10 +489,27 @@ impl TypeRegister {
             _ => unreachable!(),
         };
 
+        match &mut register.elements.get_mut("Timer").unwrap() {
+            ElementType::Builtin(ref mut b) => {
+                let timer = Rc::get_mut(b).unwrap();
+                timer
+                    .properties
+                    .insert("start".into(), BuiltinPropertyInfo::from(BuiltinFunction::StartTimer));
+                timer
+                    .properties
+                    .insert("stop".into(), BuiltinPropertyInfo::from(BuiltinFunction::StopTimer));
+                timer.properties.insert(
+                    "restart".into(),
+                    BuiltinPropertyInfo::from(BuiltinFunction::RestartTimer),
+                );
+            }
+            _ => unreachable!(),
+        }
+
         let font_metrics_prop = crate::langtype::BuiltinPropertyInfo {
             ty: font_metrics_type(),
             property_visibility: PropertyVisibility::Output,
-            default_value: BuiltinPropertyDefault::Fn(|elem| {
+            default_value: BuiltinPropertyDefault::WithElement(|elem| {
                 crate::expression_tree::Expression::FunctionCall {
                     function: BuiltinFunction::ItemFontMetrics.into(),
                     arguments: vec![crate::expression_tree::Expression::ElementReference(
@@ -516,13 +525,8 @@ impl TypeRegister {
                 let text_input = Rc::get_mut(b).unwrap();
                 text_input.properties.insert(
                     "set-selection-offsets".into(),
-                    BuiltinPropertyInfo::new(Type::Function(
-                        BuiltinFunction::SetSelectionOffsets.ty(),
-                    )),
+                    BuiltinPropertyInfo::from(BuiltinFunction::SetSelectionOffsets),
                 );
-                text_input
-                    .member_functions
-                    .insert("set-selection-offsets".into(), BuiltinFunction::SetSelectionOffsets);
                 text_input.properties.insert("font-metrics".into(), font_metrics_prop.clone());
             }
 
@@ -561,8 +565,12 @@ impl TypeRegister {
     pub fn builtin() -> Rc<RefCell<Self>> {
         let mut register = Self::builtin_internal();
 
-        register.elements.remove("ComponentContainer");
-        register.types.remove("component-factory");
+        register.elements.remove("ComponentContainer").unwrap();
+        register.types.remove("component-factory").unwrap();
+
+        register.elements.remove("DragArea").unwrap();
+        register.elements.remove("DropArea").unwrap();
+        register.types.remove("DropEvent").unwrap(); // Also removed in xtask/src/slintdocs.rs
 
         Rc::new(RefCell::new(register))
     }
@@ -636,7 +644,7 @@ impl TypeRegister {
         self.lookup(qualified[0].as_ref())
     }
 
-    /// Add the component with it's defined name
+    /// Add the component with its defined name
     ///
     /// Returns false if there was already an element with the same name
     pub fn add(&mut self, comp: Rc<Component>) -> bool {

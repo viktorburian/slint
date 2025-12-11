@@ -145,6 +145,10 @@ impl Document {
                 .collect();
             let en =
                 Enumeration { name: name.clone(), values, default_value: 0, node: Some(n.clone()) };
+            if en.values.is_empty() {
+                diag.push_error("Enums must have at least one value".into(), &n);
+            }
+
             let ty = Type::Enumeration(Rc::new(en));
             if !local_registry.insert_type_with_name(ty.clone(), name.clone()) {
                 diag.push_warning(
@@ -248,7 +252,7 @@ impl Document {
             if !local_compo.used.get() {
                 diag.push_warning(
                     "Component is neither used nor exported".into(),
-                    &local_compo.node,
+                    &local_compo.node.as_ref().map(|n| n.to_source_location()),
                 )
             }
         }
@@ -315,9 +319,15 @@ pub struct Timer {
     pub interval: NamedReference,
     pub triggered: NamedReference,
     pub running: NamedReference,
+    pub element: ElementWeak,
 }
 
-type ChildrenInsertionPoint = (ElementRc, usize, syntax_nodes::ChildrenPlaceholder);
+#[derive(Clone, Debug)]
+pub struct ChildrenInsertionPoint {
+    pub parent: ElementRc,
+    pub insertion_index: usize,
+    pub node: syntax_nodes::ChildrenPlaceholder,
+}
 
 /// Used sub types for a root component
 #[derive(Debug, Default)]
@@ -366,7 +376,7 @@ impl InitCode {
 /// Or is materialized for repeated expression.
 #[derive(Default, Debug)]
 pub struct Component {
-    pub node: Option<SyntaxNode>,
+    pub node: Option<syntax_nodes::Component>,
     pub id: SmolStr,
     pub root_element: ElementRc,
 
@@ -414,7 +424,7 @@ impl Component {
         let mut child_insertion_point = None;
         let is_legacy_syntax = node.child_token(SyntaxKind::ColonEqual).is_some();
         let c = Component {
-            node: Some(node.clone().into()),
+            node: Some(node.clone()),
             id: parser::identifier_text(&node.DeclaredIdentifier()).unwrap_or_default(),
             root_element: Element::from_node(
                 node.Element(),
@@ -543,12 +553,19 @@ impl From<Type> for PropertyDeclaration {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TransitionDirection {
+    In,
+    Out,
+    InOut,
+}
+
 #[derive(Debug, Clone)]
 pub struct TransitionPropertyAnimation {
     /// The state id as computed in lower_state
     pub state_id: i32,
-    /// false for 'to', true for 'out'
-    pub is_out: bool,
+    /// The direction of the transition
+    pub direction: TransitionDirection,
     /// The content of the `animation` object
     pub animation: ElementRc,
 }
@@ -557,13 +574,42 @@ impl TransitionPropertyAnimation {
     /// Return an expression which returns a boolean which is true if the transition is active.
     /// The state argument is an expression referencing the state property of type StateInfo
     pub fn condition(&self, state: Expression) -> Expression {
-        Expression::BinaryExpression {
-            lhs: Box::new(Expression::StructFieldAccess {
-                base: Box::new(state),
-                name: (if self.is_out { "previous-state" } else { "current-state" }).into(),
-            }),
-            rhs: Box::new(Expression::NumberLiteral(self.state_id as _, Unit::None)),
-            op: '=',
+        match self.direction {
+            TransitionDirection::In => Expression::BinaryExpression {
+                lhs: Box::new(Expression::StructFieldAccess {
+                    base: Box::new(state),
+                    name: "current-state".into(),
+                }),
+                rhs: Box::new(Expression::NumberLiteral(self.state_id as _, Unit::None)),
+                op: '=',
+            },
+            TransitionDirection::Out => Expression::BinaryExpression {
+                lhs: Box::new(Expression::StructFieldAccess {
+                    base: Box::new(state),
+                    name: "previous-state".into(),
+                }),
+                rhs: Box::new(Expression::NumberLiteral(self.state_id as _, Unit::None)),
+                op: '=',
+            },
+            TransitionDirection::InOut => Expression::BinaryExpression {
+                lhs: Box::new(Expression::BinaryExpression {
+                    lhs: Box::new(Expression::StructFieldAccess {
+                        base: Box::new(state.clone()),
+                        name: "current-state".into(),
+                    }),
+                    rhs: Box::new(Expression::NumberLiteral(self.state_id as _, Unit::None)),
+                    op: '=',
+                }),
+                rhs: Box::new(Expression::BinaryExpression {
+                    lhs: Box::new(Expression::StructFieldAccess {
+                        base: Box::new(state),
+                        name: "previous-state".into(),
+                    }),
+                    rhs: Box::new(Expression::NumberLiteral(self.state_id as _, Unit::None)),
+                    op: '=',
+                }),
+                op: '|',
+            },
         }
     }
 }
@@ -601,7 +647,7 @@ impl Clone for PropertyAnimation {
                         .iter()
                         .map(|t| TransitionPropertyAnimation {
                             state_id: t.state_id,
-                            is_out: t.is_out,
+                            direction: t.direction,
                             animation: deep_clone(&t.animation),
                         })
                         .collect(),
@@ -641,6 +687,11 @@ pub struct ElementDebugInfo {
     // The id qualified with the enclosing component name. Given `foo := Bar {}` this is `EnclosingComponent::foo`
     pub qualified_id: Option<SmolStr>,
     pub type_name: String,
+    // Hold an id for each element that is unique during this build, based on the source file and
+    // the offset of the `LBrace` token.
+    //
+    // This helps to cross-reference the element in the different build stages the LSP has to deal with.
+    pub element_hash: u64,
     pub node: syntax_nodes::Element,
     // Field to indicate whether this element was a layout that had
     // been lowered into a rectangle in the lower_layouts pass.
@@ -997,6 +1048,7 @@ impl Element {
             base_type,
             debug: vec![ElementDebugInfo {
                 qualified_id,
+                element_hash: 0,
                 type_name,
                 node: node.clone(),
                 layout: None,
@@ -1475,7 +1527,7 @@ impl Element {
                     diag,
                     tr,
                 );
-                if let Some((_, _, se)) = sub_child_insertion_point {
+                if let Some(ChildrenInsertionPoint { node: se, .. }) = sub_child_insertion_point {
                     diag.push_error(
                         "The @children placeholder cannot appear in a repeated element".into(),
                         &se,
@@ -1492,7 +1544,7 @@ impl Element {
                     diag,
                     tr,
                 );
-                if let Some((_, _, se)) = sub_child_insertion_point {
+                if let Some(ChildrenInsertionPoint { node: se, .. }) = sub_child_insertion_point {
                     diag.push_error(
                         "The @children placeholder cannot appear in a conditional element".into(),
                         &se,
@@ -1518,7 +1570,11 @@ impl Element {
                     &children_placeholder,
                 )
             } else {
-                *component_child_insertion_point = Some((r.clone(), index, children_placeholder));
+                *component_child_insertion_point = Some(ChildrenInsertionPoint {
+                    parent: r.clone(),
+                    insertion_index: index,
+                    node: children_placeholder,
+                });
             }
         }
 
@@ -1699,6 +1755,7 @@ impl Element {
                 declared_pure: p.pure,
                 is_local_to_component: true,
                 is_in_direct_base: false,
+                builtin_function: None,
             },
         )
     }
@@ -1863,7 +1920,7 @@ impl Element {
     }
 
     pub fn sub_component(&self) -> Option<&Rc<Component>> {
-        if self.repeated.is_some() || self.is_component_placeholder {
+        if self.repeated.is_some() {
             None
         } else if let ElementType::Component(sub_component) = &self.base_type {
             Some(sub_component)
@@ -2188,7 +2245,12 @@ pub fn recurse_elem_including_sub_components_no_borrow<State>(
     recurse_elem_no_borrow(&component.root_element, state, &mut |elem, state| {
         let base = if elem.borrow().repeated.is_some() {
             if let ElementType::Component(base) = &elem.borrow().base_type {
-                Some(base.clone())
+                if base.parent_element.upgrade().is_some() {
+                    Some(base.clone())
+                } else {
+                    // The process_repeater_components pass was not run yet
+                    None
+                }
             } else {
                 None
             }
@@ -2205,6 +2267,11 @@ pub fn recurse_elem_including_sub_components_no_borrow<State>(
         .borrow()
         .iter()
         .for_each(|p| recurse_elem_including_sub_components_no_borrow(&p.component, state, vis));
+    component
+        .menu_item_tree
+        .borrow()
+        .iter()
+        .for_each(|c| recurse_elem_including_sub_components_no_borrow(c, state, vis));
 }
 
 /// This visit the binding attached to this element, but does not recurse in children elements
@@ -2408,6 +2475,11 @@ pub fn visit_all_named_references(
                     vis(&mut t.triggered);
                     vis(&mut t.running);
                 });
+                for o in compo.optimized_elements.borrow().iter() {
+                    visit_element_expressions(o, |expr, _, _| {
+                        visit_named_references_in_expression(expr, vis)
+                    });
+                }
             }
             compo
         },
@@ -2421,8 +2493,16 @@ pub fn visit_all_expressions(
     component: &Component,
     mut vis: impl FnMut(&mut Expression, &dyn Fn() -> Type),
 ) {
-    recurse_elem_including_sub_components(component, &(), &mut |elem, _| {
+    recurse_elem_including_sub_components(component, &Weak::new(), &mut |elem, parent_compo| {
         visit_element_expressions(elem, |expr, _, ty| vis(expr, ty));
+        let compo = elem.borrow().enclosing_component.clone();
+        if !Weak::ptr_eq(parent_compo, &compo) {
+            let compo = compo.upgrade().unwrap();
+            for o in compo.optimized_elements.borrow().iter() {
+                visit_element_expressions(o, |expr, _, ty| vis(expr, ty));
+            }
+        }
+        compo
     })
 }
 
@@ -2435,8 +2515,7 @@ pub struct State {
 
 #[derive(Debug, Clone)]
 pub struct Transition {
-    /// false for 'to', true for 'out'
-    pub is_out: bool,
+    pub direction: TransitionDirection,
     pub state_id: SmolStr,
     pub property_animations: Vec<(NamedReference, SourceLocation, ElementRc)>,
     pub node: syntax_nodes::Transition,
@@ -2452,8 +2531,21 @@ impl Transition {
         if let Some(star) = trs.child_token(SyntaxKind::Star) {
             diag.push_error("catch-all not yet implemented".into(), &star);
         };
+        let direction_text = trs
+            .first_child_or_token()
+            .and_then(|t| t.as_token().map(|tok| tok.text().to_string()))
+            .unwrap_or_default();
+
         Transition {
-            is_out: parser::identifier_text(&trs).unwrap_or_default() == "out",
+            direction: match direction_text.as_str() {
+                "in" => TransitionDirection::In,
+                "out" => TransitionDirection::Out,
+                "in-out" => TransitionDirection::InOut,
+                "in_out" => TransitionDirection::InOut,
+                _ => {
+                    unreachable!("Unknown transition direction: '{}'", direction_text);
+                }
+            },
             state_id: trs
                 .DeclaredIdentifier()
                 .and_then(|x| parser::identifier_text(&x))
@@ -2637,7 +2729,7 @@ impl Exports {
             let name = last_compo.id.clone();
             if last_compo.is_global() {
                 if sorted_deduped_exports.is_empty() {
-                    diag.push_warning("Global singleton is implicitly marked for export. This is deprecated and it should be explicitly exported".into(), &last_compo.node);
+                    diag.push_warning("Global singleton is implicitly marked for export. This is deprecated and it should be explicitly exported".into(), &last_compo.node.as_ref().map(|n| n.to_source_location()));
                     sorted_deduped_exports.push((
                         ExportedName { name, name_ident: doc.clone().into() },
                         Either::Left(last_compo.clone()),
@@ -2647,7 +2739,7 @@ impl Exports {
                 .iter()
                 .any(|e| e.1.as_ref().left().is_some_and(|c| !c.is_global()))
             {
-                diag.push_warning("Component is implicitly marked for export. This is deprecated and it should be explicitly exported".into(), &last_compo.node);
+                diag.push_warning("Component is implicitly marked for export. This is deprecated and it should be explicitly exported".into(), &last_compo.node.as_ref().map(|n| n.to_source_location()));
                 let insert_pos = sorted_deduped_exports
                     .partition_point(|(existing_export, _)| existing_export.name <= name);
                 sorted_deduped_exports.insert(

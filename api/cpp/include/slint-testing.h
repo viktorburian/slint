@@ -13,7 +13,7 @@
 
 /// Use the functions and classes in this namespace for in-process UI testing.
 ///
-/// This module is still experimental - it's API is subject to changes and not stabilized yet. To
+/// This module is still experimental - its API is subject to changes and not stabilized yet. To
 /// use the module, you must enable the `SLINT_FEATURE_EXPERIMENTAL=ON` and `SLINT_FEATURE_TESTING`
 /// CMake options.
 namespace slint::testing {
@@ -36,7 +36,7 @@ class ElementHandle
     explicit ElementHandle(const cbindgen_private::ElementHandle *inner) : inner(*inner) { }
 
 public:
-    /// Visits visible elements within a component and call the visitor for each of them.
+    /// Visits visible elements within a component and calls the visitor for each of them.
     ///
     /// The visitor must be a callable object that accepts an `ElementHandle` and returns either
     /// `void`, or a type that can be converted to `bool`.
@@ -44,7 +44,7 @@ public:
     ///   visited.
     /// - If the visitor returns a type that can be converted to `bool`, the visitation continues as
     ///   long as the conversion result is false; otherwise, it stops, returning that value.
-    ///   If the visitor never returns something that convertts to true, then the function returns a
+    ///   If the visitor never returns something that converts to true, then the function returns a
     ///   default constructed value;
     ///
     /// ```cpp
@@ -57,8 +57,8 @@ public:
              typename R = std::invoke_result_t<Visitor, ElementHandle>>
         requires((std::is_constructible_v<bool, R> && std::is_default_constructible_v<R>)
                  || std::is_void_v<R>)
-    static auto visit_elements(const ComponentHandle<T> &component,
-                               Visitor visitor) -> std::invoke_result_t<Visitor, ElementHandle>
+    static auto visit_elements(const ComponentHandle<T> &component, Visitor visitor)
+            -> std::invoke_result_t<Visitor, ElementHandle>
     {
         // using R = std::invoke_result_t<Visitor, ElementHandle>;
         auto vrc = component.into_dyn();
@@ -95,10 +95,7 @@ public:
     static SharedVector<ElementHandle> find_by_accessible_label(const ComponentHandle<T> &component,
                                                                 std::string_view label)
     {
-        cbindgen_private::Slice<uint8_t> label_view {
-            const_cast<unsigned char *>(reinterpret_cast<const unsigned char *>(label.data())),
-            label.size()
-        };
+        cbindgen_private::Slice<uint8_t> label_view = private_api::string_to_slice(label);
         auto vrc = component.into_dyn();
         SharedVector<ElementHandle> result;
         cbindgen_private::slint_testing_element_find_by_accessible_label(
@@ -112,10 +109,7 @@ public:
     static SharedVector<ElementHandle> find_by_element_id(const ComponentHandle<T> &component,
                                                           std::string_view element_id)
     {
-        cbindgen_private::Slice<uint8_t> element_id_view {
-            const_cast<unsigned char *>(reinterpret_cast<const unsigned char *>(element_id.data())),
-            element_id.size()
-        };
+        cbindgen_private::Slice<uint8_t> element_id_view = private_api::string_to_slice(element_id);
         auto vrc = component.into_dyn();
         SharedVector<ElementHandle> result;
         cbindgen_private::slint_testing_element_find_by_element_id(
@@ -129,10 +123,8 @@ public:
     static SharedVector<ElementHandle>
     find_by_element_type_name(const ComponentHandle<T> &component, std::string_view type_name)
     {
-        cbindgen_private::Slice<uint8_t> element_type_name_view {
-            const_cast<unsigned char *>(reinterpret_cast<const unsigned char *>(type_name.data())),
-            type_name.size()
-        };
+        cbindgen_private::Slice<uint8_t> element_type_name_view =
+                private_api::string_to_slice(type_name);
         auto vrc = component.into_dyn();
         SharedVector<ElementHandle> result;
         cbindgen_private::slint_testing_element_find_by_element_type_name(

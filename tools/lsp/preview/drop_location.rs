@@ -314,7 +314,7 @@ pub struct DropMark {
     pub end: i_slint_core::lengths::LogicalPoint,
 }
 
-fn insert_position_at_end(
+pub fn insert_position_at_end(
     target_element_node: &common::ElementRcNode,
 ) -> Option<InsertInformation> {
     target_element_node.with_element_node(|node| {
@@ -327,7 +327,7 @@ fn insert_position_at_end(
             == SyntaxKind::Whitespace
             && before_closing.text().contains('\n')
         {
-            let bracket_indent = before_closing.text().split('\n').last().unwrap(); // must exist in this branch
+            let bracket_indent = before_closing.text().split('\n').next_back().unwrap(); // must exist in this branch
             (
                 "    ".to_string(),
                 format!("{bracket_indent}    "),
@@ -368,7 +368,7 @@ fn insert_position_at_end(
     })
 }
 
-fn insert_position_before_child(
+pub fn insert_position_before_child(
     target_element_node: &common::ElementRcNode,
     child_index: usize,
 ) -> Option<InsertInformation> {
@@ -398,7 +398,7 @@ fn insert_position_before_child(
             let (pre_indent, indent) = if before_first_token.kind() == SyntaxKind::Whitespace
                 && before_first_token.text().contains('\n')
             {
-                let element_indent = before_first_token.text().split('\n').last().unwrap(); // must exist in this branch
+                let element_indent = before_first_token.text().split('\n').next_back().unwrap(); // must exist in this branch
                 ("".to_string(), element_indent.to_string())
             } else if before_first_token.kind() == SyntaxKind::Whitespace
                 && !before_first_token.text().contains('\n')
@@ -466,7 +466,7 @@ fn insert_position_before_first_component(
                 if token.prev_token().is_some() {
                     let nl_count = token.text().chars().filter(|c| c == &'\n').count();
                     let replacement_range =
-                        token.text().split('\n').last().map(|s| s.len()).unwrap_or(0) as u32;
+                        token.text().split('\n').next_back().map(|s| s.len()).unwrap_or(0) as u32;
 
                     if nl_count >= 2 {
                         (String::new(), replacement_range)
@@ -750,41 +750,8 @@ pub fn can_drop_at(
 
     let dm = find_drop_location(&component_instance, position, &component.name);
 
-    let can_drop = if let Some(dm) = &dm {
-        // Cache compilation results:
-        #[derive(Clone, Debug, Hash, Eq, PartialEq)]
-        struct CacheEntry {
-            component_type: String,
-            target_element: by_address::ByAddress<object_tree::ElementRc>,
-            target_node_index: usize,
-            child_index: usize,
-        }
-        let cache_entry = CacheEntry {
-            component_type: component.name.to_string(),
-            target_element: by_address::ByAddress(dm.target_element_node.element.clone()),
-            target_node_index: dm.target_element_node.debug_index,
-            child_index: dm.child_index,
-        };
-
-        thread_local!(static CACHE: RefCell<clru::CLruCache<CacheEntry, bool>> = RefCell::new(clru::CLruCache::new(NonZeroUsize::new(10).unwrap())));
-        CACHE.with_borrow_mut(|cache| {
-            if let Some(does_compile) = cache.get(&cache_entry) {
-                *does_compile
-            } else {
-                let does_compile = if let Some((edit, _)) =
-                    create_drop_element_workspace_edit(document_cache, component, dm)
-                {
-                    workspace_edit_compiles(document_cache, &edit)
-                } else {
-                    false
-                };
-                cache.put(cache_entry, does_compile);
-                does_compile
-            }
-        })
-    } else {
-        false
-    };
+    let can_drop =
+        if let Some(dm) = &dm { check_can_drop(document_cache, component, dm) } else { false };
 
     if can_drop {
         preview::set_drop_mark(&dm.unwrap().drop_mark);
@@ -795,13 +762,63 @@ pub fn can_drop_at(
     can_drop
 }
 
+/// Do a compilation to figure out if the drop is allowed
+fn check_can_drop(
+    document_cache: &common::DocumentCache,
+    component: &common::ComponentInformation,
+    dm: &DropInformation,
+) -> bool {
+    // Cache compilation results:
+    #[derive(Clone, Debug, Hash, Eq, PartialEq)]
+    struct CacheEntry {
+        component_type: String,
+        target_element: by_address::ByAddress<object_tree::ElementRc>,
+        target_node_index: usize,
+        child_index: usize,
+    }
+    let cache_entry = CacheEntry {
+        component_type: component.name.to_string(),
+        target_element: by_address::ByAddress(dm.target_element_node.element.clone()),
+        target_node_index: dm.target_element_node.debug_index,
+        child_index: dm.child_index,
+    };
+
+    thread_local!(static CACHE: RefCell<clru::CLruCache<CacheEntry, bool>> = RefCell::new(clru::CLruCache::new(NonZeroUsize::new(10).unwrap())));
+    CACHE.with_borrow_mut(|cache| {
+        if let Some(does_compile) = cache.get(&cache_entry) {
+            *does_compile
+        } else {
+            let does_compile = if let Some((edit, _)) =
+                create_drop_element_workspace_edit(document_cache, component, dm)
+            {
+                workspace_edit_compiles(document_cache, &edit)
+                    == preview::CompilationResult::ChangeCompiles
+            } else {
+                false
+            };
+            cache.put(cache_entry, does_compile);
+            does_compile
+        }
+    })
+}
+
 pub fn workspace_edit_compiles(
     document_cache: &common::DocumentCache,
     workspace_edit: &lsp_types::WorkspaceEdit,
-) -> bool {
-    let Ok(mut result) = text_edit::apply_workspace_edit(document_cache, workspace_edit) else {
-        return false;
+) -> preview::CompilationResult {
+    let Ok(result) = text_edit::apply_workspace_edit(document_cache, workspace_edit) else {
+        return preview::CompilationResult::ChangeFails;
     };
+    edited_text_compiles(document_cache, result)
+}
+
+pub fn edited_text_compiles(
+    document_cache: &common::DocumentCache,
+    mut result: Vec<text_edit::EditedText>,
+) -> preview::CompilationResult {
+    if result.is_empty() {
+        return preview::CompilationResult::NoChange;
+    }
 
     let mut diag = BuildDiagnostics::default();
 
@@ -814,10 +831,14 @@ pub fn workspace_edit_compiles(
     }) {
         diag = BuildDiagnostics::default(); // reset errors that might be due to missing changes elsewhere
 
-        let _ = preview::poll_once(document_cache.load_url(&u, None, c, &mut diag));
+        let _ = common::poll_once(document_cache.load_url(&u, None, c, &mut diag));
     }
 
-    !diag.has_errors()
+    if diag.has_errors() {
+        preview::CompilationResult::ChangeFails
+    } else {
+        preview::CompilationResult::ChangeCompiles
+    }
 }
 
 /// Find the Element to insert into. None means we can not insert at this point.
@@ -867,6 +888,7 @@ pub fn can_move_to(
                     position,
                 ) {
                     workspace_edit_compiles(document_cache, &edit)
+                        == preview::CompilationResult::ChangeCompiles
                 } else {
                     false
                 };
@@ -903,7 +925,8 @@ fn pretty_node_removal_range(node: &SyntaxNode) -> Option<TextRange> {
     {
         before_et.text_range().end()
             - TextSize::from(
-                before_et.text().split('\n').last().map(|s| s.len()).unwrap_or_default() as u32,
+                before_et.text().split('\n').next_back().map(|s| s.len()).unwrap_or_default()
+                    as u32,
             )
     } else if before_et.kind() == SyntaxKind::Whitespace {
         before_et.text_range().start() // Cut away all WS!
@@ -957,6 +980,10 @@ pub fn drop_at(
     let component_instance = preview::component_instance()?;
 
     let drop_info = find_drop_location(&component_instance, position, &component.name)?;
+
+    if !check_can_drop(document_cache, component, &drop_info) {
+        return None;
+    }
 
     create_drop_element_workspace_edit(document_cache, component, &drop_info)
 }
@@ -1038,14 +1065,21 @@ pub fn create_drop_element_workspace_edit(
 ) -> Option<(lsp_types::WorkspaceEdit, DropData)> {
     let placeholder = if component.is_layout { placeholder() } else { String::new() };
 
+    let is_list_view = drop_info.target_element_node.with_element_node(|node| {
+        node.QualifiedName().is_some_and(|qn| qn.text().to_string().trim() == "ListView")
+    });
+    let for_loop = if is_list_view { "for _ in 3: " } else { "" };
+
     let new_text = if component.default_properties.is_empty() {
         format!(
-            "{}{} {{{placeholder} }}\n{}",
+            "{}{for_loop}{} {{{placeholder} }}\n{}",
             drop_info.insert_info.pre_indent, component.name, drop_info.insert_info.post_indent
         )
     } else {
-        let mut to_insert =
-            format!("{}{} {{{placeholder}\n", drop_info.insert_info.pre_indent, component.name);
+        let mut to_insert = format!(
+            "{}{for_loop}{} {{{placeholder}\n",
+            drop_info.insert_info.pre_indent, component.name
+        );
         for p in &component.default_properties {
             to_insert += &format!("{}    {}: {};\n", drop_info.insert_info.indent, p.name, p.value);
         }
@@ -1108,7 +1142,6 @@ pub fn create_move_element_workspace_edit(
     instance_index: usize,
     position: LogicalPoint,
 ) -> Option<(lsp_types::WorkspaceEdit, DropData)> {
-    let component_type = element.component_type();
     let parent_of_element = element.parent();
 
     let placeholder_text = if Some(&drop_info.target_element_node) == parent_of_element.as_ref() {
@@ -1145,6 +1178,15 @@ pub fn create_move_element_workspace_edit(
         String::new()
     };
 
+    create_swap_element_workspace_edit(drop_info, element, placeholder_text)
+}
+
+pub fn create_swap_element_workspace_edit(
+    drop_info: &DropInformation,
+    element: &common::ElementRcNode,
+    placeholder_text: String,
+) -> Option<(lsp_types::WorkspaceEdit, DropData)> {
+    let component_type = element.component_type();
     let new_text = {
         let element_text_lines = extract_text_of_element(element, &["x", "y"]);
 
@@ -1189,7 +1231,7 @@ pub fn create_move_element_workspace_edit(
     let mut edits = Vec::with_capacity(3);
 
     let remove_me = element.with_decorated_node(|node| {
-        node_removal_text_edit(&document_cache, &node, placeholder_text.clone())
+        node_removal_text_edit(&document_cache, &node, placeholder_text)
     })?;
     if remove_me.url.to_file_path().as_ref().map(|p| p.as_path()) == Ok(source_file.path()) {
         selection_offset = text_edit::TextOffsetAdjustment::new(&remove_me.edit, &source_file)
@@ -1273,7 +1315,10 @@ pub fn move_element_to(
         instance_index,
         position,
     )
-    .and_then(|(e, d)| workspace_edit_compiles(document_cache, &e).then_some((e, d)))
+    .and_then(|(e, d)| {
+        (workspace_edit_compiles(document_cache, &e) == preview::CompilationResult::ChangeCompiles)
+            .then_some((e, d))
+    })
 }
 
 #[cfg(test)]
@@ -1355,14 +1400,20 @@ export component Entry inherits Main { /* @lsp:ignore-node */ } // 582
     fn test_workspace_edit_compiles_ok() {
         let (document_cache, workspace_edit) = workspace_edit_setup(vec![(194, 194, "foo := ")]);
 
-        assert!(super::workspace_edit_compiles(&document_cache, &workspace_edit));
+        assert_eq!(
+            super::workspace_edit_compiles(&document_cache, &workspace_edit),
+            super::preview::CompilationResult::ChangeCompiles
+        );
     }
 
     #[test]
     fn test_workspace_edit_compiles_parse_fails() {
         let (document_cache, workspace_edit) = workspace_edit_setup(vec![(194, 194, "FOOBAR ")]);
 
-        assert!(!super::workspace_edit_compiles(&document_cache, &workspace_edit));
+        assert_eq!(
+            super::workspace_edit_compiles(&document_cache, &workspace_edit),
+            super::preview::CompilationResult::ChangeFails
+        );
     }
 
     #[test]
@@ -1373,7 +1424,10 @@ export component Entry inherits Main { /* @lsp:ignore-node */ } // 582
             "property <bool> foobar: root.foobar;\n        ",
         )]);
 
-        assert!(!super::workspace_edit_compiles(&document_cache, &workspace_edit));
+        assert_eq!(
+            super::workspace_edit_compiles(&document_cache, &workspace_edit),
+            super::preview::CompilationResult::ChangeFails
+        );
     }
 
     #[test]
@@ -1389,7 +1443,10 @@ export component Entry inherits Main { /* @lsp:ignore-node */ } // 582
             "    Button { // 318\n                width: parent.button_width;\n                text: \"Press me\";\n            }\n        "
         )]);
 
-        assert!(!super::workspace_edit_compiles(&document_cache, &workspace_edit));
+        assert_eq!(
+            super::workspace_edit_compiles(&document_cache, &workspace_edit),
+            super::preview::CompilationResult::ChangeFails
+        );
     }
 
     #[test]
@@ -1406,7 +1463,24 @@ export component Entry inherits Main { /* @lsp:ignore-node */ } // 582
             "Rectangle { // 470\n              background: Colors.blue;\n        }\n        "
         ),]);
 
-        assert!(super::workspace_edit_compiles(&document_cache, &workspace_edit));
+        assert_eq!(
+            super::workspace_edit_compiles(&document_cache, &workspace_edit),
+            super::preview::CompilationResult::ChangeCompiles
+        );
+    }
+
+    #[test]
+    fn test_workspace_edit_compiles_no_change() {
+        let (document_cache, workspace_edit) = workspace_edit_setup(vec![(
+            466,
+            540,
+            "Rectangle { // 470\n              background: Colors.blue;\n        }\n        ",
+        )]);
+
+        assert_eq!(
+            super::workspace_edit_compiles(&document_cache, &workspace_edit),
+            super::preview::CompilationResult::ChangeCompiles
+        );
     }
 
     #[test]
@@ -1423,14 +1497,20 @@ export component Entry inherits Main { /* @lsp:ignore-node */ } // 582
             "Button { // 318\n                    width: parent.button-width;\n                    text: \"Press me\";\n                }"
         ),]);
 
-        assert!(super::workspace_edit_compiles(&document_cache, &workspace_edit));
+        assert_eq!(
+            super::workspace_edit_compiles(&document_cache, &workspace_edit),
+            super::preview::CompilationResult::ChangeCompiles
+        );
     }
 
     #[test]
     fn test_workspace_edit_compiles_edit_button_text_ok() {
         let (document_cache, workspace_edit) = workspace_edit_setup(vec![(409, 417, "xxx")]);
 
-        assert!(super::workspace_edit_compiles(&document_cache, &workspace_edit));
+        assert_eq!(
+            super::workspace_edit_compiles(&document_cache, &workspace_edit),
+            super::preview::CompilationResult::ChangeCompiles
+        );
     }
 
     // #[track_caller]
@@ -1457,7 +1537,10 @@ export component Entry inherits Main { /* @lsp:ignore-node */ } // 582
         assert_eq!(drop_data.path, test::main_test_file_name());
         assert_eq!(drop_data.selection_offset, selection_offset.into());
 
-        assert!(super::workspace_edit_compiles(&document_cache, &workspace_edit));
+        assert_eq!(
+            super::workspace_edit_compiles(&document_cache, &workspace_edit),
+            super::preview::CompilationResult::ChangeCompiles
+        );
     }
 
     #[test]

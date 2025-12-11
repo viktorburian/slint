@@ -59,22 +59,38 @@ export component TextEditBase inherits Rectangle {
     forward-focus: text-input;
 
     ContextMenuArea {
+        enabled: root.enabled;
         Menu {
             MenuItem {
                 title: @tr("Cut");
-                activated => { text-input.cut(); }
+                enabled: !root.read-only && root.enabled;
+                activated => {
+                    text-input.cut();
+                }
             }
+
             MenuItem {
                 title: @tr("Copy");
-                activated => { text-input.copy(); }
+                enabled: !root.text.is-empty;
+                activated => {
+                    text-input.copy();
+                }
             }
+
             MenuItem {
+                enabled: !root.read-only && root.enabled;
                 title: @tr("Paste");
-                activated => { text-input.paste(); }
+                activated => {
+                    text-input.paste();
+                }
             }
+
             MenuItem {
                 title: @tr("Select All");
-                activated => { text-input.select-all(); }
+                enabled: !root.text.is-empty;
+                activated => {
+                    text-input.select-all();
+                }
             }
         }
 
@@ -123,7 +139,6 @@ export component TextEditBase inherits Rectangle {
                 }
             }
         }
-
     }
 
     placeholder := Text {

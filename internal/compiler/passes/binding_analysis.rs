@@ -18,6 +18,7 @@ use crate::object_tree::{find_parent_element, Document, ElementRc, PropertyAnima
 use derive_more as dm;
 
 use crate::expression_tree::Callable;
+use crate::CompilerConfiguration;
 use smol_str::{SmolStr, ToSmolStr};
 
 /// Maps the alias in the other direction than what the BindingExpression::two_way_binding does.
@@ -25,11 +26,20 @@ use smol_str::{SmolStr, ToSmolStr};
 /// ReverseAliases maps B to A.
 type ReverseAliases = HashMap<NamedReference, Vec<NamedReference>>;
 
-pub fn binding_analysis(doc: &Document, diag: &mut BuildDiagnostics) {
+pub fn binding_analysis(
+    doc: &Document,
+    compiler_config: &CompilerConfiguration,
+    diag: &mut BuildDiagnostics,
+) {
     let mut reverse_aliases = Default::default();
     mark_used_base_properties(doc);
     propagate_is_set_on_aliases(doc, &mut reverse_aliases);
-    perform_binding_analysis(doc, &reverse_aliases, diag);
+    perform_binding_analysis(
+        doc,
+        &reverse_aliases,
+        compiler_config.error_on_binding_loop_with_window_layout,
+        diag,
+    );
 }
 
 /// A reference to a property which might be deep in a component path.
@@ -114,15 +124,22 @@ impl From<NamedReference> for PropertyPath {
 #[derive(Default)]
 struct AnalysisContext {
     visited: HashSet<PropertyPath>,
+    /// The stack of properties that depends on each other
     currently_analyzing: linked_hash_set::LinkedHashSet<PropertyPath>,
+    /// When set, one of the property in the `currently_analyzing` stack is the window layout property
+    /// And we should issue a warning if that's part of a loop instead of an error
+    window_layout_property: Option<PropertyPath>,
+    error_on_binding_loop_with_window_layout: bool,
 }
 
 fn perform_binding_analysis(
     doc: &Document,
     reverse_aliases: &ReverseAliases,
+    error_on_binding_loop_with_window_layout: bool,
     diag: &mut BuildDiagnostics,
 ) {
-    let mut context = AnalysisContext::default();
+    let mut context =
+        AnalysisContext { error_on_binding_loop_with_window_layout, ..Default::default() };
     doc.visit_all_used_components(|component| {
         crate::object_tree::recurse_elem_including_sub_components_no_borrow(
             component,
@@ -151,7 +168,7 @@ fn analyze_element(
     }
     for cb in elem.borrow().change_callbacks.values() {
         for e in cb.borrow().iter() {
-            recurse_expression(e, &mut |prop, r| {
+            recurse_expression(elem, e, &mut |prop, r| {
                 process_property(prop, r, context, reverse_aliases, diag);
             });
         }
@@ -170,15 +187,27 @@ fn analyze_element(
     if let Some(component) = elem.borrow().enclosing_component.upgrade() {
         if Rc::ptr_eq(&component.root_element, elem) {
             for e in component.init_code.borrow().iter() {
-                recurse_expression(e, &mut |prop, r| {
+                recurse_expression(elem, e, &mut |prop, r| {
                     process_property(prop, r, context, reverse_aliases, diag);
                 });
             }
+            component.root_constraints.borrow_mut().visit_named_references(&mut |nr| {
+                process_property(&nr.clone().into(), P, context, reverse_aliases, diag);
+            });
+            component.popup_windows.borrow().iter().for_each(|p| {
+                process_property(&p.x.clone().into(), P, context, reverse_aliases, diag);
+                process_property(&p.y.clone().into(), P, context, reverse_aliases, diag);
+            });
+            component.timers.borrow().iter().for_each(|t| {
+                process_property(&t.interval.clone().into(), P, context, reverse_aliases, diag);
+                process_property(&t.running.clone().into(), P, context, reverse_aliases, diag);
+                process_property(&t.triggered.clone().into(), P, context, reverse_aliases, diag);
+            });
         }
     }
 
     if let Some(repeated) = &elem.borrow().repeated {
-        recurse_expression(&repeated.model, &mut |prop, r| {
+        recurse_expression(elem, &repeated.model, &mut |prop, r| {
             process_property(prop, r, context, reverse_aliases, diag);
         });
         if let Some(lv) = &repeated.is_listview {
@@ -220,6 +249,28 @@ fn analyze_binding(
     }
 
     if context.currently_analyzing.contains(current) {
+        let mut loop_description = String::new();
+        let mut has_window_layout = false;
+        for it in context.currently_analyzing.iter().rev() {
+            if context.window_layout_property.as_ref().is_some_and(|p| p == it) {
+                has_window_layout = true;
+            }
+            if !loop_description.is_empty() {
+                loop_description.push_str(" -> ");
+            }
+            match it.prop.element().borrow().id.as_str() {
+                "" => loop_description.push_str(it.prop.name()),
+                id => {
+                    loop_description.push_str(id);
+                    loop_description.push_str(".");
+                    loop_description.push_str(it.prop.name());
+                }
+            }
+            if it == current {
+                break;
+            }
+        }
+
         for it in context.currently_analyzing.iter().rev() {
             let p = &it.prop;
             let elem = p.element();
@@ -229,11 +280,12 @@ fn analyze_binding(
                 break;
             }
 
-            diag.push_error(
-                format!("The binding for the property '{}' is part of a binding loop", p.name()),
-                &binding.span.clone().unwrap_or_else(|| elem.to_source_location()),
-            );
-
+            let span = binding.span.clone().unwrap_or_else(|| elem.to_source_location());
+            if !context.error_on_binding_loop_with_window_layout && has_window_layout {
+                diag.push_warning(format!("The binding for the property '{}' is part of a binding loop ({loop_description}).\nThis was allowed in previous version of Slint, but is deprecated and may cause panic at runtime", p.name()), &span);
+            } else {
+                diag.push_error(format!("The binding for the property '{}' is part of a binding loop ({loop_description})", p.name()), &span);
+            }
             if it == current {
                 break;
             }
@@ -282,7 +334,7 @@ fn analyze_binding(
         }
     };
 
-    recurse_expression(&b.expression, &mut process_prop);
+    recurse_expression(&current.prop.element(), &b.expression, &mut process_prop);
 
     let mut is_const =
         b.expression.is_constant() && b.two_way_bindings.iter().all(|n| n.is_constant());
@@ -303,7 +355,7 @@ fn analyze_binding(
     match &binding.borrow().animation {
         Some(PropertyAnimation::Static(e)) => analyze_element(e, context, reverse_aliases, diag),
         Some(PropertyAnimation::Transition { animations, state_ref }) => {
-            recurse_expression(state_ref, &mut process_prop);
+            recurse_expression(&current.prop.element(), state_ref, &mut process_prop);
             for a in animations {
                 analyze_element(&a.animation, context, reverse_aliases, diag);
             }
@@ -358,14 +410,22 @@ fn process_property(
         let element = prop.prop.element();
         if element.borrow().bindings.contains_key(prop.prop.name()) {
             analyze_binding(&prop, context, reverse_aliases, diag);
+            break;
         }
-        let next = if let ElementType::Component(base) = &element.borrow().base_type {
-            if element.borrow().property_declarations.contains_key(prop.prop.name()) {
+        let next = match &element.borrow().base_type {
+            ElementType::Component(base) => {
+                if element.borrow().property_declarations.contains_key(prop.prop.name()) {
+                    break;
+                }
+                base.root_element.clone()
+            }
+            ElementType::Builtin(builtin) => {
+                if builtin.properties.contains_key(prop.prop.name()) {
+                    visit_builtin_property(builtin, &prop, context, reverse_aliases, diag);
+                }
                 break;
             }
-            base.root_element.clone()
-        } else {
-            break;
+            _ => break,
         };
         next.borrow()
             .property_analysis
@@ -380,9 +440,13 @@ fn process_property(
 }
 
 // Same as in crate::visit_all_named_references_in_element, but not mut
-fn recurse_expression(expr: &Expression, vis: &mut impl FnMut(&PropertyPath, ReadType)) {
+fn recurse_expression(
+    elem: &ElementRc,
+    expr: &Expression,
+    vis: &mut impl FnMut(&PropertyPath, ReadType),
+) {
     const P: ReadType = ReadType::PropertyRead;
-    expr.visit(|sub| recurse_expression(sub, vis));
+    expr.visit(|sub| recurse_expression(elem, sub, vis));
     match expr {
         Expression::PropertyReference(r) => vis(&r.clone().into(), P),
         Expression::LayoutCacheAccess { layout_cache_prop, .. } => {
@@ -459,6 +523,17 @@ fn recurse_expression(expr: &Expression, vis: &mut impl FnMut(&PropertyPath, Rea
                     );
                 }
             }
+            BuiltinFunction::GetWindowDefaultFontSize => {
+                let root =
+                    elem.borrow().enclosing_component.upgrade().unwrap().root_element.clone();
+                if root.borrow().builtin_type().is_some_and(|bt| bt.name == "Window") {
+                    vis(
+                        &NamedReference::new(&root, SmolStr::new_static("default-font-size"))
+                            .into(),
+                        ReadType::PropertyRead,
+                    );
+                }
+            }
             _ => {}
         },
         _ => {}
@@ -472,7 +547,13 @@ fn visit_layout_items_dependencies<'a>(
 ) {
     for it in items {
         let mut element = it.element.clone();
-        if element.borrow().repeated.as_ref().map(|r| recurse_expression(&r.model, vis)).is_some() {
+        if element
+            .borrow()
+            .repeated
+            .as_ref()
+            .map(|r| recurse_expression(&element, &r.model, vis))
+            .is_some()
+        {
             element = it.element.borrow().base_type.as_component().root_element.clone();
         }
 
@@ -539,6 +620,47 @@ fn visit_implicit_layout_info_dependencies(
         }
 
         _ => (),
+    }
+}
+
+fn visit_builtin_property(
+    builtin: &crate::langtype::BuiltinElement,
+    prop: &PropertyPath,
+    context: &mut AnalysisContext,
+    reverse_aliases: &ReverseAliases,
+    diag: &mut BuildDiagnostics,
+) {
+    let name = prop.prop.name();
+    if builtin.name == "Window" {
+        for (p, orientation) in
+            [("width", Orientation::Horizontal), ("height", Orientation::Vertical)]
+        {
+            if name == p {
+                // find the actual root component
+                let is_root = |e: &ElementRc| -> bool {
+                    ElementRc::ptr_eq(
+                        e,
+                        &e.borrow().enclosing_component.upgrade().unwrap().root_element,
+                    )
+                };
+                let mut root = prop.prop.element();
+                if !is_root(&root) {
+                    return;
+                };
+                for e in prop.elements.iter().rev() {
+                    if !is_root(&e.0) {
+                        return;
+                    }
+                    root = e.0.clone();
+                }
+                if let Some(p) = root.borrow().layout_info_prop(orientation) {
+                    let path = PropertyPath::from(p.clone());
+                    let old_layout = context.window_layout_property.replace(path.clone());
+                    process_property(&path, ReadType::NativeRead, context, reverse_aliases, diag);
+                    context.window_layout_property = old_layout;
+                };
+            }
+        }
     }
 }
 

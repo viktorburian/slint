@@ -32,21 +32,19 @@ fn default_cc() -> i_slint_compiler::CompilerConfiguration {
     )
 }
 
-pub type OpenImportFallback = Option<
-    Rc<
-        dyn Fn(
-            String,
-        ) -> Pin<
-            Box<dyn Future<Output = Option<std::io::Result<(SourceFileVersion, String)>>>>,
-        >,
-    >,
+/// This is i_slint_compiler::OpenImportFallback with version information
+pub type OpenImportFallback = Rc<
+    dyn Fn(
+        String,
+    )
+        -> Pin<Box<dyn Future<Output = Option<std::io::Result<(SourceFileVersion, String)>>>>>,
 >;
 
 pub struct CompilerConfiguration {
     pub include_paths: Vec<std::path::PathBuf>,
     pub library_paths: HashMap<String, std::path::PathBuf>,
     pub style: Option<String>,
-    pub open_import_fallback: OpenImportFallback,
+    pub open_import_fallback: Option<OpenImportFallback>,
     pub resource_url_mapper:
         Option<Rc<dyn Fn(&str) -> Pin<Box<dyn Future<Output = Option<String>>>>>>,
 }
@@ -66,7 +64,7 @@ impl Default for CompilerConfiguration {
 }
 
 impl CompilerConfiguration {
-    fn build(mut self) -> (i_slint_compiler::CompilerConfiguration, OpenImportFallback) {
+    fn build(mut self) -> (i_slint_compiler::CompilerConfiguration, Option<OpenImportFallback>) {
         let mut result = default_cc();
         result.include_paths = std::mem::take(&mut self.include_paths);
         result.library_paths = std::mem::take(&mut self.library_paths);
@@ -80,16 +78,16 @@ impl CompilerConfiguration {
 /// A cache of loaded documents
 pub struct DocumentCache {
     type_loader: TypeLoader,
-    open_import_fallback: OpenImportFallback,
+    open_import_fallback: Option<OpenImportFallback>,
     source_file_versions: Rc<RefCell<SourceFileVersionMap>>,
 }
 
 #[cfg(feature = "preview-engine")]
 pub fn document_cache_parts_setup(
     compiler_config: &mut i_slint_compiler::CompilerConfiguration,
-    open_import_fallback: OpenImportFallback,
+    open_import_fallback: Option<OpenImportFallback>,
     initial_file_versions: SourceFileVersionMap,
-) -> (OpenImportFallback, Rc<RefCell<SourceFileVersionMap>>) {
+) -> (Option<OpenImportFallback>, Rc<RefCell<SourceFileVersionMap>>) {
     let source_file_versions = Rc::new(RefCell::new(initial_file_versions));
     DocumentCache::wire_up_import_fallback(
         compiler_config,
@@ -101,9 +99,9 @@ pub fn document_cache_parts_setup(
 impl DocumentCache {
     fn wire_up_import_fallback(
         compiler_config: &mut i_slint_compiler::CompilerConfiguration,
-        open_import_fallback: OpenImportFallback,
+        open_import_fallback: Option<OpenImportFallback>,
         source_file_versions: Rc<RefCell<SourceFileVersionMap>>,
-    ) -> (OpenImportFallback, Rc<RefCell<SourceFileVersionMap>>) {
+    ) -> (Option<OpenImportFallback>, Rc<RefCell<SourceFileVersionMap>>) {
         let sfv = source_file_versions.clone();
         if let Some(open_import_fallback) = open_import_fallback.clone() {
             compiler_config.open_import_fallback = Some(Rc::new(move |file_name: String| {
@@ -152,7 +150,7 @@ impl DocumentCache {
 
     pub fn new_from_raw_parts(
         mut type_loader: TypeLoader,
-        open_import_fallback: OpenImportFallback,
+        open_import_fallback: Option<OpenImportFallback>,
         source_file_versions: Rc<RefCell<SourceFileVersionMap>>,
     ) -> Self {
         let (open_import_fallback, source_file_versions) = Self::wire_up_import_fallback(
@@ -193,6 +191,41 @@ impl DocumentCache {
         self.type_loader.get_document(&path)
     }
 
+    fn uses_widgets_impl(&self, doc_path: PathBuf, dedup: &mut HashSet<PathBuf>) -> bool {
+        if dedup.contains(&doc_path) {
+            return false;
+        }
+
+        if doc_path.starts_with("builtin:/") && doc_path.ends_with("std-widgets.slint") {
+            return true;
+        }
+
+        let Some(doc) = self.get_document_by_path(&doc_path) else {
+            return false;
+        };
+
+        dedup.insert(doc_path.to_path_buf());
+
+        for import in doc.imports.iter().map(|i| PathBuf::from(&i.file)) {
+            if self.uses_widgets_impl(import, dedup) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Returns true if doc_url uses (possibly indirectly) widgets from "std-widgets.slint"
+    pub fn uses_widgets(&self, doc_url: &Url) -> bool {
+        let Some(doc_path) = uri_to_file(doc_url) else {
+            return false;
+        };
+
+        let mut dedup = HashSet::new();
+
+        self.uses_widgets_impl(doc_path, &mut dedup)
+    }
+
     pub fn get_document_by_path<'a>(&'a self, path: &'_ Path) -> Option<&'a Document> {
         self.type_loader.get_document(path)
     }
@@ -227,7 +260,7 @@ impl DocumentCache {
         self.type_loader.all_files().filter_map(|p| file_to_uri(p))
     }
 
-    pub fn global_type_registry(&self) -> std::cell::Ref<TypeRegister> {
+    pub fn global_type_registry(&self) -> std::cell::Ref<'_, TypeRegister> {
         self.type_loader.global_type_registry.borrow()
     }
 
@@ -286,7 +319,8 @@ impl DocumentCache {
         content: String,
         diag: &mut BuildDiagnostics,
     ) -> Result<()> {
-        let path = uri_to_file(url).ok_or("Failed to convert path")?;
+        let path =
+            uri_to_file(url).ok_or_else(|| format!("Failed to convert path for loading: {url}"))?;
         self.type_loader.load_file(&path, &path, content, false, diag).await;
         self.source_file_versions.borrow_mut().insert(path, version);
         Ok(())
@@ -298,7 +332,11 @@ impl DocumentCache {
     }
 
     pub fn drop_document(&mut self, url: &Url) -> Result<()> {
-        let path = uri_to_file(url).ok_or("Failed to convert path")?;
+        let Some(path) = uri_to_file(url) else {
+            // This isn't fatal, but we might want to learn about paths/schemes to support in the future.
+            eprintln!("Failed to convert path for dropping document: {url}");
+            return Ok(());
+        };
         Ok(self.type_loader.drop_document(&path)?)
     }
 

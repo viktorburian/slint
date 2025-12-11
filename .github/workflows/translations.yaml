@@ -7,8 +7,8 @@ name: Update Translations
 on:
     workflow_dispatch:
 
-    schedule:
-        - cron: "0 3 * * *"
+#    schedule:
+#        - cron: "0 3 * * *"
 
 jobs:
     update-translations:
@@ -20,7 +20,7 @@ jobs:
         steps:
             - name: "install gettext tools"
               run: sudo apt install gettext
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v5
             - uses: ./.github/actions/setup-rust
 
             - name: "gallery: Run slint-tr-extractor"
@@ -63,7 +63,7 @@ jobs:
                   git commit -a -m 'Update Translations: extract strings'
             - name: Result
               # Only run this if there was a diff!
-              run: if [ '${{ steps.git_diff.outcome }}' = 'failure' ]; then echo "I commited this change to git:"; git show ; else echo "This change was ignored:" ; git diff HEAD ; fi
+              run: if [ '${{ steps.git_diff.outcome }}' = 'failure' ]; then echo "I committed this change to git:"; git show ; else echo "This change was ignored:" ; git diff HEAD ; fi
             - name: Push changes
               uses: ad-m/github-push-action@master
               with:

@@ -5,10 +5,10 @@ description: All Slint types
 // cSpell: ignore Farbfeld
 ---
 
-import SlintProperty  from '/src/components/SlintProperty.astro';
-import Link from '/src/components/Link.astro';
+import SlintProperty from '@slint/common-files/src/components/SlintProperty.astro';
+import Link from '@slint/common-files/src/components/Link.astro';
 import { Tabs, TabItem } from '@astrojs/starlight/components';
-import LangRefLink from '/src/components/LangRefLink.astro';
+import LangRefLink from '@slint/common-files/src/components/LangRefLink.astro';
 
 Slint is a statically typed language and offers a rich range of primitive types.
 
@@ -68,6 +68,17 @@ export component CharacterCountOfString {
     property<int> zero-width-joiner: "👨‍👩‍👧‍👦".character-count; // 1
     property<int> region-indicator-character: "🇦🇿🇿🇦".character-count; // 2
     property<int> emoji-tag-sequences: "🏴󠁧󠁢󠁥󠁮󠁧󠁿".character-count; // 1
+}
+```
+
+The `to-lowercase` and `to-uppercase` methods convert `string` to lowercase or uppercase according to the [Unicode Character Property](https://www.unicode.org/versions/Unicode16.0.0/core-spec/chapter-4/#G124722).
+
+```slint
+export component ChangeCaseOfString {
+    property<string> hello: "HELLO".to-lowercase(); // "hello"
+    property<string> bye: "tschüß".to-uppercase(); // "TSCHÜSS"
+    property<string> odysseus: "ὈΔΥΣΣΕΎΣ".to-lowercase(); // "ὀδυσσεύς"
+    property<string> new_year: "农历新年".to-uppercase(); // "农历新年"
 }
 ```
 
@@ -146,8 +157,10 @@ Slint looks for images in the following places:
 
 Loading image from `http` is only supported in [SlintPad](https://slintpad.com).
 
-Supported format are SVG, as well as formats supported by the [`image` crate](https://crates.io/crates/image):
+Supported format are SVG, and formats supported by the [`image` crate](https://crates.io/crates/image):
 AVIF, BMP, DDS, Farbfeld, GIF, HDR, ICO, JPEG, EXR, PNG, PNM, QOI, TGA, TIFF, WebP.
+
+For Rust applications, not all formats are enabled by default. Enable them with the `image-default-formats` Cargo feature.
 
 <Tabs syncKey="dev-language">
 <TabItem label="C++">
@@ -161,6 +174,10 @@ Some image formats can be disabled using cargo features to reduce binary size an
 </TabItem>
 <TabItem label="NodeJS" >
 In JavaScript properties or struct fields of the image type are mapped an object that implement the <LangRefLink lang="nodejs" relpath="interfaces/ImageData.html">ImageData interface</LangRefLink>.
+</TabItem>
+
+<TabItem label="Python" >
+In Python, properties or struct fields of the image type are mapped to <LangRefLink lang="python" relpath="slint.html#Image">`Image`</LangRefLink>.
 </TabItem>
 
 </Tabs>
@@ -212,8 +229,9 @@ See also the <Link type="Image" label="Image element"/>.
 ## Animation
 ### easing
 <SlintProperty propName="easing" typeName="easing" defaultValue='linear'>
-Property animation allow specifying an easing curve.
-`easing`: can be any of the following. See [`easings.net`](https://easings.net/) for a visual reference:
+The `easing` type allows defining an easing curve for animations.
+
+To specify an easing curve, use the values from the `Easing` namespace. For example you can use `Easing.ease-out` or `Easing.ease-in-quad`. The namespace consists of the following names (see [`easings.net`](https://easings.net/) for a visual reference):
 
     -   `linear`
     -   `ease-in-quad`
@@ -248,6 +266,26 @@ Property animation allow specifying an easing curve.
     -   `ease-out-bounce`
     -   `ease-in-out-bounce`
     -   `cubic-bezier(a, b, c, d)` as in CSS
+
+Additionally, in expressions of type `easing`, those names are available directly.
+
+```slint
+struct AnimationData {
+    curve: easing,
+}
+
+component Custom inherits Rectangle {
+    property<AnimationData> animation: {
+        // Using the Easing namespace.
+        curve: Easing.ease-in-circ,
+    };
+
+	animate x {
+    	// In easing expressions the names are available via global scope.
+    	easing: ease-out-bounce;
+	}
+}
+```
 </SlintProperty>
 
 

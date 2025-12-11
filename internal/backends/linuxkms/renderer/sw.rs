@@ -7,16 +7,55 @@ use i_slint_core::api::PhysicalSize as PhysicalWindowSize;
 use i_slint_core::platform::PlatformError;
 pub use i_slint_core::software_renderer::SoftwareRenderer;
 use i_slint_core::software_renderer::{PremultipliedRgbaColor, RepaintBufferType, TargetPixel};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::display::RenderingRotation;
 
 pub struct SoftwareRendererAdapter {
     renderer: SoftwareRenderer,
-    display: Rc<dyn crate::display::swdisplay::SoftwareBufferDisplay>,
-    presenter: Rc<dyn crate::display::Presenter>,
+    display: Arc<dyn crate::display::swdisplay::SoftwareBufferDisplay>,
+    presenter: Arc<dyn crate::display::Presenter>,
     size: PhysicalWindowSize,
 }
+
+const SOFTWARE_RENDER_SUPPORTED_DRM_FOURCC_FORMATS: &[drm::buffer::DrmFourcc] = &[
+    // Preferred formats
+    drm::buffer::DrmFourcc::Xrgb8888,
+    drm::buffer::DrmFourcc::Argb8888,
+    // drm::buffer::DrmFourcc::Bgra8888,
+    // drm::buffer::DrmFourcc::Rgba8888,
+
+    // 16-bit formats
+    drm::buffer::DrmFourcc::Rgb565,
+    // drm::buffer::DrmFourcc::Bgr565,
+
+    // // 4444 formats
+    // drm::buffer::DrmFourcc::Argb4444,
+    // drm::buffer::DrmFourcc::Abgr4444,
+    // drm::buffer::DrmFourcc::Rgba4444,
+    // drm::buffer::DrmFourcc::Bgra4444,
+
+    // // Single channel formats
+    // drm::buffer::DrmFourcc::Gray8,
+    // drm::buffer::DrmFourcc::C8,
+    // drm::buffer::DrmFourcc::R8,
+    // drm::buffer::DrmFourcc::R16,
+
+    // // Dual channel formats
+    // drm::buffer::DrmFourcc::Gr88,
+    // drm::buffer::DrmFourcc::Rg88,
+    // drm::buffer::DrmFourcc::Gr1616,
+    // drm::buffer::DrmFourcc::Rg1616,
+
+    // // 10-bit formats
+    // drm::buffer::DrmFourcc::Xrgb2101010,
+    // drm::buffer::DrmFourcc::Argb2101010,
+    // drm::buffer::DrmFourcc::Abgr2101010,
+    // drm::buffer::DrmFourcc::Rgba1010102,
+    // drm::buffer::DrmFourcc::Bgra1010102,
+    // drm::buffer::DrmFourcc::Rgbx1010102,
+    // drm::buffer::DrmFourcc::Bgrx1010102,
+];
 
 #[repr(transparent)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -67,7 +106,10 @@ impl SoftwareRendererAdapter {
     pub fn new(
         device_opener: &crate::DeviceOpener,
     ) -> Result<Box<dyn crate::fullscreenwindowadapter::FullscreenRenderer>, PlatformError> {
-        let display = crate::display::swdisplay::new(device_opener)?;
+        let display = crate::display::swdisplay::new(
+            device_opener,
+            SOFTWARE_RENDER_SUPPORTED_DRM_FOURCC_FORMATS,
+        )?;
 
         let (width, height) = display.size();
         let size = i_slint_core::api::PhysicalSize::new(width, height);
@@ -118,7 +160,7 @@ impl crate::fullscreenwindowadapter::FullscreenRenderer for SoftwareRendererAdap
             });
 
             match format {
-                drm::buffer::DrmFourcc::Xrgb8888 => {
+                drm::buffer::DrmFourcc::Xrgb8888 | drm::buffer::DrmFourcc::Argb8888 => {
                     let buffer: &mut [DumbBufferPixelXrgb888] =
                         bytemuck::cast_slice_mut(pixels.as_mut());
                     self.renderer.render(buffer, self.size.width as usize);

@@ -329,11 +329,13 @@ impl Type {
 }
 
 #[derive(Debug, Clone)]
-
 pub enum BuiltinPropertyDefault {
     None,
     Expr(Expression),
-    Fn(fn(&crate::object_tree::ElementRc) -> Expression),
+    /// When materializing a property of this type, it will be initialized with an Expression that depends on the ElementRc
+    WithElement(fn(&crate::object_tree::ElementRc) -> Expression),
+    /// The property is actually not a property but a builtin function
+    BuiltinFunction(BuiltinFunction),
 }
 
 impl BuiltinPropertyDefault {
@@ -341,7 +343,10 @@ impl BuiltinPropertyDefault {
         match self {
             BuiltinPropertyDefault::None => None,
             BuiltinPropertyDefault::Expr(expression) => Some(expression.clone()),
-            BuiltinPropertyDefault::Fn(init_expr) => Some(init_expr(elem)),
+            BuiltinPropertyDefault::WithElement(init_expr) => Some(init_expr(elem)),
+            BuiltinPropertyDefault::BuiltinFunction(..) => {
+                unreachable!("can't get an expression for functions")
+            }
         }
     }
 }
@@ -367,6 +372,16 @@ impl BuiltinPropertyInfo {
 
     pub fn is_native_output(&self) -> bool {
         matches!(self.property_visibility, PropertyVisibility::InOut | PropertyVisibility::Output)
+    }
+}
+
+impl From<BuiltinFunction> for BuiltinPropertyInfo {
+    fn from(function: BuiltinFunction) -> Self {
+        Self {
+            ty: Type::Function(function.ty()),
+            default_value: BuiltinPropertyDefault::BuiltinFunction(function),
+            property_visibility: PropertyVisibility::Public,
+        }
     }
 }
 
@@ -411,14 +426,7 @@ impl ElementType {
                 match b.properties.get(resolved_name.as_ref()) {
                     None => {
                         if b.is_non_item_type {
-                            PropertyLookupResult {
-                                resolved_name,
-                                property_type: Type::Invalid,
-                                property_visibility: PropertyVisibility::Private,
-                                declared_pure: None,
-                                is_local_to_component: false,
-                                is_in_direct_base: false,
-                            }
+                            PropertyLookupResult::invalid(resolved_name)
                         } else {
                             crate::typeregister::reserved_property(name)
                         }
@@ -430,6 +438,10 @@ impl ElementType {
                         declared_pure: None,
                         is_local_to_component: false,
                         is_in_direct_base: false,
+                        builtin_function: match &p.default_value {
+                            BuiltinPropertyDefault::BuiltinFunction(f) => Some(f.clone()),
+                            _ => None,
+                        },
                     },
                 }
             }
@@ -448,16 +460,10 @@ impl ElementType {
                     declared_pure: None,
                     is_local_to_component: false,
                     is_in_direct_base: false,
+                    builtin_function: None,
                 }
             }
-            _ => PropertyLookupResult {
-                resolved_name: Cow::Borrowed(name),
-                property_type: Type::Invalid,
-                property_visibility: PropertyVisibility::Private,
-                declared_pure: None,
-                is_local_to_component: false,
-                is_in_direct_base: false,
-            },
+            _ => PropertyLookupResult::invalid(Cow::Borrowed(name)),
         }
     }
 
@@ -497,7 +503,7 @@ impl ElementType {
         match self {
             Self::Component(component) => {
                 let base_type = match &*component.child_insertion_point.borrow() {
-                    Some(insert_in) => insert_in.0.borrow().base_type.clone(),
+                    Some(insert_in) => insert_in.parent.borrow().base_type.clone(),
                     None => {
                         let base_type = component.root_element.borrow().base_type.clone();
                         if base_type == tr.empty_type() {
@@ -540,7 +546,7 @@ impl ElementType {
                         if !tr.expose_internal_types
                             && matches!(&t, Self::Builtin(e) if e.is_internal)
                         {
-                            format!("Unknown element '{name}'. (The type exist as an internal type, but cannot be accessed in this scope)")
+                            format!("Unknown element '{name}'. (The type exists as an internal type, but cannot be accessed in this scope)")
                         } else {
                             return Ok(t);
                         }
@@ -558,25 +564,11 @@ impl ElementType {
             }
             _ => tr.lookup_element(name).and_then(|t| {
                 if !tr.expose_internal_types && matches!(&t, Self::Builtin(e) if e.is_internal) {
-                    Err(format!("Unknown element '{name}'. (The type exist as an internal type, but cannot be accessed in this scope)"))
+                    Err(format!("Unknown element '{name}'. (The type exists as an internal type, but cannot be accessed in this scope)"))
                 } else {
                     Ok(t)
                 }
             })
-        }
-    }
-
-    pub fn lookup_member_function(&self, name: &str) -> Option<BuiltinFunction> {
-        match self {
-            Self::Builtin(builtin) => builtin
-                .member_functions
-                .get(name)
-                .cloned()
-                .or_else(|| crate::typeregister::reserved_member_function(name)),
-            Self::Component(component) => {
-                component.root_element.borrow().base_type.lookup_member_function(name)
-            }
-            _ => None,
         }
     }
 
@@ -712,7 +704,7 @@ pub struct BuiltinElement {
     pub name: SmolStr,
     pub native_class: Rc<NativeClass>,
     pub properties: BTreeMap<SmolStr, BuiltinPropertyInfo>,
-    /// Additional builtin element that can be accpeted as child of this element
+    /// Additional builtin element that can be accepted as child of this element
     /// (example `Tab` in `TabWidget`, `Row` in `GridLayout` and the path elements in `Path`)
     pub additional_accepted_child_types: HashMap<SmolStr, Rc<BuiltinElement>>,
     /// `Self` is conceptually in `additional_accepted_child_types` (which it can't otherwise that'd make a Rc loop)
@@ -721,7 +713,6 @@ pub struct BuiltinElement {
     /// Non-item type do not have reserved properties (x/width/rowspan/...) added to them  (eg: PropertyAnimation)
     pub is_non_item_type: bool,
     pub accepts_focus: bool,
-    pub member_functions: HashMap<SmolStr, BuiltinFunction>,
     pub is_global: bool,
     pub default_size_binding: DefaultSizeBinding,
     /// When true this is an internal type not shown in the auto-completion
@@ -740,13 +731,16 @@ pub struct PropertyLookupResult<'a> {
     pub property_type: Type,
     pub property_visibility: PropertyVisibility,
     pub declared_pure: Option<bool>,
-    /// True if the property is part of the the current component (for visibility purposes)
+    /// True if the property is part of the current component (for visibility purposes)
     pub is_local_to_component: bool,
-    /// True if the property in the direct base of the component (for visibility purposes)
+    /// True if the property in the direct base of the component (for protected visibility purposes)
     pub is_in_direct_base: bool,
+
+    /// If the property is a builtin function
+    pub builtin_function: Option<BuiltinFunction>,
 }
 
-impl PropertyLookupResult<'_> {
+impl<'a> PropertyLookupResult<'a> {
     pub fn is_valid(&self) -> bool {
         self.property_type != Type::Invalid
     }
@@ -759,6 +753,18 @@ impl PropertyLookupResult<'_> {
                 | (PropertyVisibility::Input, true)
                 | (PropertyVisibility::Output, false)
         )
+    }
+
+    pub fn invalid(resolved_name: Cow<'a, str>) -> Self {
+        Self {
+            resolved_name,
+            property_type: Type::Invalid,
+            property_visibility: PropertyVisibility::Private,
+            declared_pure: None,
+            is_local_to_component: false,
+            is_in_direct_base: false,
+            builtin_function: None,
+        }
     }
 }
 
@@ -863,12 +869,17 @@ pub struct LengthConversionPowers {
     pub px_to_phx_power: i8,
 }
 
-/// If the `Type::UnitProduct(a)` can be converted to `Type::UnitProduct(a)` by multiplying
+/// If the `Type::UnitProduct(a)` can be converted to `Type::UnitProduct(b)` by multiplying
 /// by the scale factor, return that scale factor, otherwise, return None
 pub fn unit_product_length_conversion(
     a: &[(Unit, i8)],
     b: &[(Unit, i8)],
 ) -> Option<LengthConversionPowers> {
+    // e.g. float to int conversion, no units
+    if a.is_empty() && b.is_empty() {
+        return Some(LengthConversionPowers { rem_to_px_power: 0, px_to_phx_power: 0 });
+    }
+
     let mut units = [0i8; 16];
     for (u, count) in a {
         units[*u as usize] += count;
@@ -904,6 +915,10 @@ pub fn unit_product_length_conversion(
 fn unit_product_length_conversion_test() {
     use Option::None;
     use Unit::*;
+    assert_eq!(
+        unit_product_length_conversion(&[], &[]),
+        Some(LengthConversionPowers { rem_to_px_power: 0, px_to_phx_power: 0 })
+    );
     assert_eq!(
         unit_product_length_conversion(&[(Px, 1)], &[(Phx, 1)]),
         Some(LengthConversionPowers { rem_to_px_power: 0, px_to_phx_power: -1 })

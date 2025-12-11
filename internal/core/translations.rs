@@ -353,8 +353,13 @@ fn index_for_locale(languages: &[&'static str]) -> Option<usize> {
 
 #[i_slint_core_macros::slint_doc]
 /// Select the current translation language when using bundled translations.
+///
 /// This function requires that the application's `.slint` file was compiled with bundled translations..
 /// It must be called after creating the first component.
+///
+/// The language string is the locale, which matches the name of the folder that contains the `LC_MESSAGES` folder.
+/// An empty string or `"en"` will select the default language.
+///
 /// Returns `Ok` if the language was selected; [`SelectBundledTranslationError`] otherwise.
 ///
 /// See also the [Translation documentation](slint:translations).
@@ -415,7 +420,7 @@ mod ffi {
     use crate::slice::Slice;
 
     /// Perform the translation and formatting.
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_translate(
         to_translate: &mut SharedString,
         context: &SharedString,
@@ -429,13 +434,13 @@ mod ffi {
     }
 
     /// Mark all translated string as dirty to perform re-translation in case the language change
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_translations_mark_dirty() {
         mark_all_translations_dirty();
     }
 
     /// Safety: The slice must contain valid null-terminated utf-8 strings
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn slint_translate_from_bundle(
         strs: Slice<*const core::ffi::c_char>,
         arguments: Slice<SharedString>,
@@ -460,7 +465,7 @@ mod ffi {
     /// (where indices[-1] is 0)
     ///
     /// Safety; the strs must be pointer to valid null-terminated utf-8 strings
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn slint_translate_from_bundle_with_plural(
         strs: Slice<*const core::ffi::c_char>,
         indices: Slice<u32>,
@@ -495,7 +500,7 @@ mod ffi {
             .unwrap();
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_translate_set_bundled_languages(languages: Slice<Slice<'static, u8>>) {
         let languages = languages
             .iter()
@@ -504,7 +509,7 @@ mod ffi {
         set_bundled_languages(&languages);
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_translate_select_bundled_translation(language: Slice<u8>) -> bool {
         let language = core::str::from_utf8(&language).unwrap();
         select_bundled_translation(language).is_ok()

@@ -131,6 +131,7 @@ pub fn lower_expression(
             llr_Expression::CodeBlock(expr.iter().map(|e| lower_expression(e, ctx)).collect::<_>())
         }
         tree_Expression::FunctionCall { function, arguments, .. } => match function {
+            Callable::Builtin(BuiltinFunction::RestartTimer) => lower_restart_timer(arguments),
             Callable::Builtin(BuiltinFunction::ShowPopupWindow) => {
                 lower_show_popup_window(arguments, ctx)
             }
@@ -155,6 +156,15 @@ pub fn lower_expression(
                 let arguments = arguments.iter().map(|e| lower_expression(e, ctx)).collect::<_>();
                 llr_Expression::CallBackCall { callback: ctx.map_property_reference(nr), arguments }
             }
+            Callable::Function(nr)
+                if nr
+                    .element()
+                    .borrow()
+                    .native_class()
+                    .is_some_and(|n| n.properties.contains_key(nr.name())) =>
+            {
+                llr_Expression::ItemMemberFunctionCall { function: ctx.map_property_reference(nr) }
+            }
             Callable::Function(nr) => {
                 let arguments = arguments.iter().map(|e| lower_expression(e, ctx)).collect::<_>();
                 llr_Expression::FunctionCall { function: ctx.map_property_reference(nr), arguments }
@@ -178,10 +188,22 @@ pub fn lower_expression(
             }
         }
         tree_Expression::Condition { condition, true_expr, false_expr } => {
+            let (true_ty, false_ty) = (true_expr.ty(), false_expr.ty());
             llr_Expression::Condition {
                 condition: Box::new(lower_expression(condition, ctx)),
                 true_expr: Box::new(lower_expression(true_expr, ctx)),
-                false_expr: lower_expression(false_expr, ctx).into(),
+                false_expr: if false_ty == Type::Invalid
+                    || false_ty == Type::Void
+                    || true_ty == false_ty
+                {
+                    Box::new(lower_expression(false_expr, ctx))
+                } else {
+                    // Because the type of the Condition is based on the false expression, we need to insert a cast
+                    Box::new(llr_Expression::Cast {
+                        from: Box::new(lower_expression(false_expr, ctx)),
+                        to: Type::Void,
+                    })
+                },
             }
         }
         tree_Expression::Array { element_ty, values } => llr_Expression::Array {
@@ -211,6 +233,12 @@ pub fn lower_expression(
                 .map(|(a, b)| (lower_expression(a, ctx), lower_expression(b, ctx)))
                 .collect::<_>(),
         },
+        tree_Expression::ConicGradient { stops } => llr_Expression::ConicGradient {
+            stops: stops
+                .iter()
+                .map(|(a, b)| (lower_expression(a, ctx), lower_expression(b, ctx)))
+                .collect::<_>(),
+        },
         tree_Expression::EnumerationValue(e) => llr_Expression::EnumerationValue(e.clone()),
         tree_Expression::ReturnStatement(..) => {
             panic!("The remove return pass should have removed all return")
@@ -231,6 +259,7 @@ pub fn lower_expression(
             rhs: Box::new(lower_expression(rhs, ctx)),
         },
         tree_Expression::EmptyComponentFactory => llr_Expression::EmptyComponentFactory,
+        tree_Expression::DebugHook { expression, .. } => lower_expression(expression, ctx),
     }
 }
 
@@ -365,6 +394,26 @@ fn repeater_special_property(
         r = PropertyReference::InParent { level, parent_reference: Box::new(r) };
     }
     llr_Expression::PropertyReference(r)
+}
+
+fn lower_restart_timer(args: &[tree_Expression]) -> llr_Expression {
+    if let [tree_Expression::ElementReference(e)] = args {
+        let timer_element = e.upgrade().unwrap();
+        let timer_comp = timer_element.borrow().enclosing_component.upgrade().unwrap();
+
+        let timer_list = timer_comp.timers.borrow();
+        let timer_index = timer_list
+            .iter()
+            .position(|t| Rc::ptr_eq(&t.element.upgrade().unwrap(), &timer_element))
+            .unwrap();
+
+        llr_Expression::BuiltinFunctionCall {
+            function: BuiltinFunction::RestartTimer,
+            arguments: vec![llr_Expression::NumberLiteral(timer_index as _)],
+        }
+    } else {
+        panic!("invalid arguments to RestartTimer");
+    }
 }
 
 fn lower_show_popup_window(

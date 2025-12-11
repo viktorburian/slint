@@ -18,6 +18,7 @@ pub(crate) mod unsafe_single_threaded;
 compile_error!(
     "At least one of the following feature need to be enabled: `std` or `unsafe-single-threaded`"
 );
+use crate::items::OperatingSystemType;
 #[cfg(all(not(feature = "std"), feature = "unsafe-single-threaded"))]
 use crate::unsafe_single_threaded::thread_local;
 #[cfg(feature = "std")]
@@ -98,3 +99,44 @@ pub type Coord = i32;
 /// This type is not exported from the public API crate, so function having this
 /// parameter cannot be called from the public API without naming it
 pub struct InternalToken;
+
+#[cfg(not(target_family = "wasm"))]
+pub fn detect_operating_system() -> OperatingSystemType {
+    if cfg!(target_os = "android") {
+        OperatingSystemType::Android
+    } else if cfg!(target_os = "ios") {
+        OperatingSystemType::Ios
+    } else if cfg!(target_os = "macos") {
+        OperatingSystemType::Macos
+    } else if cfg!(target_os = "windows") {
+        OperatingSystemType::Windows
+    } else if cfg!(target_os = "linux") {
+        OperatingSystemType::Linux
+    } else {
+        OperatingSystemType::Other
+    }
+}
+
+#[cfg(target_family = "wasm")]
+pub fn detect_operating_system() -> OperatingSystemType {
+    let mut user_agent =
+        web_sys::window().and_then(|w| w.navigator().user_agent().ok()).unwrap_or_default();
+    user_agent.make_ascii_lowercase();
+    let mut platform =
+        web_sys::window().and_then(|w| w.navigator().platform().ok()).unwrap_or_default();
+    platform.make_ascii_lowercase();
+
+    if user_agent.contains("ipad") || user_agent.contains("iphone") {
+        OperatingSystemType::Ios
+    } else if user_agent.contains("android") {
+        OperatingSystemType::Android
+    } else if platform.starts_with("mac") {
+        OperatingSystemType::Macos
+    } else if platform.starts_with("win") {
+        OperatingSystemType::Windows
+    } else if platform.starts_with("linux") {
+        OperatingSystemType::Linux
+    } else {
+        OperatingSystemType::Other
+    }
+}

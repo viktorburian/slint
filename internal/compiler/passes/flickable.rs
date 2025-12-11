@@ -12,6 +12,7 @@
 
 use crate::expression_tree::{BindingExpression, Expression, MinMaxOp, NamedReference};
 use crate::langtype::{ElementType, NativeClass, Type};
+use crate::layout::is_layout;
 use crate::object_tree::{Component, Element, ElementRc};
 use crate::typeregister::TypeRegister;
 use core::cell::RefCell;
@@ -122,11 +123,9 @@ fn create_viewport_element(flickable: &ElementRc, native_empty: &Rc<NativeClass>
         .is_set_externally = true;
 
     let enclosing_component = flickable.borrow().enclosing_component.upgrade().unwrap();
-    if let Some((insertion_point, _, _)) =
-        &mut *enclosing_component.child_insertion_point.borrow_mut()
-    {
-        if std::rc::Rc::ptr_eq(insertion_point, flickable) {
-            *insertion_point = viewport.clone()
+    if let Some(insertion_point) = &mut *enclosing_component.child_insertion_point.borrow_mut() {
+        if std::rc::Rc::ptr_eq(&insertion_point.parent, flickable) {
+            insertion_point.parent = viewport.clone()
         }
     }
 
@@ -206,15 +205,6 @@ fn fixup_geometry(flickable_elem: &ElementRc) {
                 ),
         )
     });
-}
-
-/// Return true if this type is a layout that has constraints
-fn is_layout(base_type: &ElementType) -> bool {
-    if let ElementType::Builtin(be) = base_type {
-        matches!(be.name.as_str(), "GridLayout" | "HorizontalLayout" | "VerticalLayout")
-    } else {
-        false
-    }
 }
 
 /// Set the property binding on the given element to the given expression (computed lazily).

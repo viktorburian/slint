@@ -9,8 +9,9 @@ use i_slint_core::lengths::ScaleFactor;
 use std::cell::RefCell;
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use std::sync::Arc;
 
-use crate::PhysicalRect;
+use crate::{PhysicalRect, SkiaSharedContext};
 
 pub trait RenderBuffer {
     fn with_buffer(
@@ -31,11 +32,11 @@ pub trait RenderBuffer {
 }
 
 struct SoftbufferRenderBuffer {
-    _context: softbuffer::Context<Rc<dyn raw_window_handle::HasDisplayHandle>>,
+    _context: softbuffer::Context<Arc<dyn raw_window_handle::HasDisplayHandle + Send + Sync>>,
     surface: RefCell<
         softbuffer::Surface<
-            Rc<dyn raw_window_handle::HasDisplayHandle>,
-            Rc<dyn raw_window_handle::HasWindowHandle>,
+            Arc<dyn raw_window_handle::HasDisplayHandle + Send + Sync>,
+            Arc<dyn raw_window_handle::HasWindowHandle + Send + Sync>,
         >,
     >,
 }
@@ -86,16 +87,13 @@ impl RenderBuffer for SoftbufferRenderBuffer {
             let damage_rects = dirty_region
                 .iter()
                 .map(|logical| {
-                    let physical_rect: PhysicalRect = logical.to_rect() * scale_factor;
+                    let physical_rect: PhysicalRect =
+                        (logical.to_rect() * scale_factor).round_out();
                     softbuffer::Rect {
                         x: physical_rect.min_x().ceil() as _,
                         y: physical_rect.min_y().ceil() as _,
-                        width: ((physical_rect.width().round() as i32).max(1) as u32)
-                            .try_into()
-                            .unwrap(),
-                        height: ((physical_rect.height().round() as i32).max(1) as u32)
-                            .try_into()
-                            .unwrap(),
+                        width: ((physical_rect.width() as i32).max(1) as u32).try_into().unwrap(),
+                        height: ((physical_rect.height() as i32).max(1) as u32).try_into().unwrap(),
                     }
                 })
                 .collect::<Vec<_>>();
@@ -116,8 +114,9 @@ pub struct SoftwareSurface {
 
 impl super::Surface for SoftwareSurface {
     fn new(
-        window_handle: Rc<dyn raw_window_handle::HasWindowHandle>,
-        display_handle: Rc<dyn raw_window_handle::HasDisplayHandle>,
+        _shared_context: &SkiaSharedContext,
+        window_handle: Arc<dyn raw_window_handle::HasWindowHandle + Send + Sync>,
+        display_handle: Arc<dyn raw_window_handle::HasDisplayHandle + Send + Sync>,
         _size: PhysicalWindowSize,
         _requested_graphics_api: Option<RequestedGraphicsAPI>,
     ) -> Result<Self, i_slint_core::platform::PlatformError> {

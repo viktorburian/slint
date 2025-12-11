@@ -39,7 +39,9 @@ pub enum BuiltinFunction {
     ATan,
     ATan2,
     Log,
+    Ln,
     Pow,
+    Exp,
     ToFixed,
     ToPrecision,
     SetFocusItem,
@@ -47,15 +49,17 @@ pub enum BuiltinFunction {
     ShowPopupWindow,
     ClosePopupWindow,
     /// Show a context popup menu.
-    /// Arguments are `(parent, entries, position)`
+    /// Arguments are `(parent, menu_tree, position)`
     ///
-    /// The first argument (parent) is a reference to the `ContectMenu` native item
-    /// The second argument (entries) can either be of type Array of MenuEntry, or a reference to a MenuItem tree.
-    /// When it is a menu item tree, it is a ElementReference to the root of the tree, and in the LLR, a NumberLiteral to an index in  [`crate::llr::SubComponent::menu_item_trees`]
+    /// The first argument (parent) is a reference to the `ContextMenu` native item
+    /// The second argument (menu_tree) is a ElementReference to the root of the tree,
+    /// and in the LLR, a NumberLiteral to an index in  [`crate::llr::SubComponent::menu_item_trees`]
     ShowPopupMenu,
+    /// Show a context popup menu from a list of entries.
+    /// Arguments are `(parent, entries, position)`
+    /// The entries argument is an array of MenuEntry
+    ShowPopupMenuInternal,
     SetSelectionOffsets,
-    /// A function that belongs to an item (such as TextInput's select-all function).
-    ItemMemberFunction(SmolStr),
     ItemFontMetrics,
     /// the "42".to_float()
     StringToFloat,
@@ -65,6 +69,8 @@ pub enum BuiltinFunction {
     StringIsEmpty,
     /// the "42".length
     StringCharacterCount,
+    StringToLowercase,
+    StringToUppercase,
     ColorRgbaStruct,
     ColorHsvaStruct,
     ColorBrighter,
@@ -78,11 +84,13 @@ pub enum BuiltinFunction {
     Hsv,
     ColorScheme,
     SupportsNativeMenuBar,
-    /// Setup the native menu bar, or the item-tree based menu bar
-    /// arguments ate: `(ref entries, ref sub-menu, ref activated, item_tree_root?)`
-    /// When there are 4 arguments, the last one is a reference to the MenuItem tree root (just like the entries in the [`Self::ShowPopupMenu`] call)
-    /// then the code will assign the callback handler and properties
-    SetupNativeMenuBar,
+    /// Setup the menu bar
+    ///
+    /// arguments are: `(ref entries, ref sub-menu, ref activated, item_tree_root, no_native_menu_bar, <condition>)`
+    /// `item_tree_root` is a reference to the MenuItem tree root (just like in the [`Self::ShowPopupMenu`] call).
+    /// `no_native_menu_bar` is a boolean literal that is true when we shouldn't try to setup the native menu bar.
+    /// `condition` is an optional expression that is the expression to `if condition : MenuBar { ... }` for optional menu
+    SetupMenuBar,
     Use24HourFormat,
     MonthDayCount,
     MonthOffset,
@@ -99,6 +107,10 @@ pub enum BuiltinFunction {
     RegisterBitmapFont,
     Translate,
     UpdateTimers,
+    DetectOperatingSystem,
+    StartTimer,
+    StopTimer,
+    RestartTimer,
 }
 
 #[derive(Debug, Clone)]
@@ -172,21 +184,25 @@ declare_builtin_function_types!(
     ATan: (Type::Float32) -> Type::Angle,
     ATan2: (Type::Float32, Type::Float32) -> Type::Angle,
     Log: (Type::Float32, Type::Float32) -> Type::Float32,
+    Ln: (Type::Float32) -> Type::Float32,
     Pow: (Type::Float32, Type::Float32) -> Type::Float32,
+    Exp: (Type::Float32) -> Type::Float32,
     ToFixed: (Type::Float32, Type::Int32) -> Type::String,
     ToPrecision: (Type::Float32, Type::Int32) -> Type::String,
     SetFocusItem: (Type::ElementReference) -> Type::Void,
     ClearFocusItem: (Type::ElementReference) -> Type::Void,
     ShowPopupWindow: (Type::ElementReference) -> Type::Void,
     ClosePopupWindow: (Type::ElementReference) -> Type::Void,
-    ShowPopupMenu: (Type::ElementReference, Type::Model, typeregister::logical_point_type()) -> Type::Void,
-    ItemMemberFunction(..): (Type::ElementReference) -> Type::Void,
+    ShowPopupMenu: (Type::ElementReference, Type::ElementReference, typeregister::logical_point_type()) -> Type::Void,
+    ShowPopupMenuInternal: (Type::ElementReference, Type::Model, typeregister::logical_point_type()) -> Type::Void,
     SetSelectionOffsets: (Type::ElementReference, Type::Int32, Type::Int32) -> Type::Void,
     ItemFontMetrics: (Type::ElementReference) -> typeregister::font_metrics_type(),
     StringToFloat: (Type::String) -> Type::Float32,
     StringIsFloat: (Type::String) -> Type::Bool,
     StringIsEmpty: (Type::String) -> Type::Bool,
     StringCharacterCount: (Type::String) -> Type::Int32,
+    StringToLowercase: (Type::String) -> Type::String,
+    StringToUppercase: (Type::String) -> Type::String,
     ImplicitLayoutInfo(..): (Type::ElementReference) -> Type::Struct(typeregister::layout_info_type()),
     ColorRgbaStruct: (Type::Color) -> Type::Struct(Rc::new(Struct {
         fields: IntoIterator::into_iter([
@@ -235,7 +251,7 @@ declare_builtin_function_types!(
     ),
     SupportsNativeMenuBar: () -> Type::Bool,
     // entries, sub-menu, activate. But the types here are not accurate.
-    SetupNativeMenuBar: (Type::Model, typeregister::noarg_callback_type(), typeregister::noarg_callback_type()) -> Type::Void,
+    SetupMenuBar: (Type::Model, typeregister::noarg_callback_type(), typeregister::noarg_callback_type()) -> Type::Void,
     MonthDayCount: (Type::Int32, Type::Int32) -> Type::Int32,
     MonthOffset: (Type::Int32, Type::Int32) -> Type::Int32,
     FormatDate: (Type::String, Type::Int32, Type::Int32, Type::Int32) -> Type::String,
@@ -252,6 +268,12 @@ declare_builtin_function_types!(
     Translate: (Type::String, Type::String, Type::String, Type::Array(Type::String.into())) -> Type::String,
     Use24HourFormat: () -> Type::Bool,
     UpdateTimers: () -> Type::Void,
+    DetectOperatingSystem: () -> Type::Enumeration(
+        typeregister::BUILTIN.with(|e| e.enums.OperatingSystemType.clone()),
+    ),
+    StartTimer: (Type::ElementReference) -> Type::Void,
+    StopTimer: (Type::ElementReference) -> Type::Void,
+    RestartTimer: (Type::ElementReference) -> Type::Void,
 );
 
 impl BuiltinFunction {
@@ -270,7 +292,7 @@ impl BuiltinFunction {
             BuiltinFunction::AnimationTick => false,
             BuiltinFunction::ColorScheme => false,
             BuiltinFunction::SupportsNativeMenuBar => false,
-            BuiltinFunction::SetupNativeMenuBar => false,
+            BuiltinFunction::SetupMenuBar => false,
             BuiltinFunction::MonthDayCount => false,
             BuiltinFunction::MonthOffset => false,
             BuiltinFunction::FormatDate => false,
@@ -291,7 +313,9 @@ impl BuiltinFunction {
             | BuiltinFunction::ACos
             | BuiltinFunction::ASin
             | BuiltinFunction::Log
+            | BuiltinFunction::Ln
             | BuiltinFunction::Pow
+            | BuiltinFunction::Exp
             | BuiltinFunction::ATan
             | BuiltinFunction::ATan2
             | BuiltinFunction::ToFixed
@@ -299,14 +323,16 @@ impl BuiltinFunction {
             BuiltinFunction::SetFocusItem | BuiltinFunction::ClearFocusItem => false,
             BuiltinFunction::ShowPopupWindow
             | BuiltinFunction::ClosePopupWindow
-            | BuiltinFunction::ShowPopupMenu => false,
+            | BuiltinFunction::ShowPopupMenu
+            | BuiltinFunction::ShowPopupMenuInternal => false,
             BuiltinFunction::SetSelectionOffsets => false,
-            BuiltinFunction::ItemMemberFunction(..) => false,
             BuiltinFunction::ItemFontMetrics => false, // depends also on Window's font properties
             BuiltinFunction::StringToFloat
             | BuiltinFunction::StringIsFloat
             | BuiltinFunction::StringIsEmpty
-            | BuiltinFunction::StringCharacterCount => true,
+            | BuiltinFunction::StringCharacterCount
+            | BuiltinFunction::StringToLowercase
+            | BuiltinFunction::StringToUppercase => true,
             BuiltinFunction::ColorRgbaStruct
             | BuiltinFunction::ColorHsvaStruct
             | BuiltinFunction::ColorBrighter
@@ -335,6 +361,10 @@ impl BuiltinFunction {
             BuiltinFunction::Translate => false,
             BuiltinFunction::Use24HourFormat => false,
             BuiltinFunction::UpdateTimers => false,
+            BuiltinFunction::DetectOperatingSystem => true,
+            BuiltinFunction::StartTimer => false,
+            BuiltinFunction::StopTimer => false,
+            BuiltinFunction::RestartTimer => false,
         }
     }
 
@@ -346,7 +376,7 @@ impl BuiltinFunction {
             BuiltinFunction::AnimationTick => true,
             BuiltinFunction::ColorScheme => true,
             BuiltinFunction::SupportsNativeMenuBar => true,
-            BuiltinFunction::SetupNativeMenuBar => false,
+            BuiltinFunction::SetupMenuBar => false,
             BuiltinFunction::MonthDayCount => true,
             BuiltinFunction::MonthOffset => true,
             BuiltinFunction::FormatDate => true,
@@ -367,7 +397,9 @@ impl BuiltinFunction {
             | BuiltinFunction::ACos
             | BuiltinFunction::ASin
             | BuiltinFunction::Log
+            | BuiltinFunction::Ln
             | BuiltinFunction::Pow
+            | BuiltinFunction::Exp
             | BuiltinFunction::ATan
             | BuiltinFunction::ATan2
             | BuiltinFunction::ToFixed
@@ -375,14 +407,16 @@ impl BuiltinFunction {
             BuiltinFunction::SetFocusItem | BuiltinFunction::ClearFocusItem => false,
             BuiltinFunction::ShowPopupWindow
             | BuiltinFunction::ClosePopupWindow
-            | BuiltinFunction::ShowPopupMenu => false,
+            | BuiltinFunction::ShowPopupMenu
+            | BuiltinFunction::ShowPopupMenuInternal => false,
             BuiltinFunction::SetSelectionOffsets => false,
-            BuiltinFunction::ItemMemberFunction(..) => false,
             BuiltinFunction::ItemFontMetrics => true,
             BuiltinFunction::StringToFloat
             | BuiltinFunction::StringIsFloat
             | BuiltinFunction::StringIsEmpty
-            | BuiltinFunction::StringCharacterCount => true,
+            | BuiltinFunction::StringCharacterCount
+            | BuiltinFunction::StringToLowercase
+            | BuiltinFunction::StringToUppercase => true,
             BuiltinFunction::ColorRgbaStruct
             | BuiltinFunction::ColorHsvaStruct
             | BuiltinFunction::ColorBrighter
@@ -404,6 +438,10 @@ impl BuiltinFunction {
             BuiltinFunction::Translate => true,
             BuiltinFunction::Use24HourFormat => true,
             BuiltinFunction::UpdateTimers => false,
+            BuiltinFunction::DetectOperatingSystem => true,
+            BuiltinFunction::StartTimer => false,
+            BuiltinFunction::StopTimer => false,
+            BuiltinFunction::RestartTimer => false,
         }
     }
 }
@@ -690,6 +728,11 @@ pub enum Expression {
         stops: Vec<(Expression, Expression)>,
     },
 
+    ConicGradient {
+        /// First expression in the tuple is a color, second expression is the stop angle
+        stops: Vec<(Expression, Expression)>,
+    },
+
     EnumerationValue(EnumerationValue),
 
     ReturnStatement(Option<Box<Expression>>),
@@ -711,6 +754,11 @@ pub enum Expression {
         op: MinMaxOp,
         lhs: Box<Expression>,
         rhs: Box<Expression>,
+    },
+
+    DebugHook {
+        expression: Box<Expression>,
+        id: SmolStr,
     },
 
     EmptyComponentFactory,
@@ -826,6 +874,7 @@ impl Expression {
             Expression::EasingCurve(_) => Type::Easing,
             Expression::LinearGradient { .. } => Type::Brush,
             Expression::RadialGradient { .. } => Type::Brush,
+            Expression::ConicGradient { .. } => Type::Brush,
             Expression::EnumerationValue(value) => Type::Enumeration(value.enumeration.clone()),
             // invalid because the expression is unreachable
             Expression::ReturnStatement(_) => Type::Invalid,
@@ -834,6 +883,7 @@ impl Expression {
             Expression::SolveLayout(..) => Type::LayoutCache,
             Expression::MinMax { ty, .. } => ty.clone(),
             Expression::EmptyComponentFactory => Type::ComponentFactory,
+            Expression::DebugHook { expression, .. } => expression.ty(),
         }
     }
 
@@ -914,6 +964,12 @@ impl Expression {
                     visitor(s);
                 }
             }
+            Expression::ConicGradient { stops } => {
+                for (c, s) in stops {
+                    visitor(c);
+                    visitor(s);
+                }
+            }
             Expression::EnumerationValue(_) => {}
             Expression::ReturnStatement(expr) => {
                 expr.as_deref().map(visitor);
@@ -928,6 +984,7 @@ impl Expression {
                 visitor(rhs);
             }
             Expression::EmptyComponentFactory => {}
+            Expression::DebugHook { expression, .. } => visitor(expression),
         }
     }
 
@@ -1010,6 +1067,12 @@ impl Expression {
                     visitor(s);
                 }
             }
+            Expression::ConicGradient { stops } => {
+                for (c, s) in stops {
+                    visitor(c);
+                    visitor(s);
+                }
+            }
             Expression::EnumerationValue(_) => {}
             Expression::ReturnStatement(expr) => {
                 expr.as_deref_mut().map(visitor);
@@ -1024,6 +1087,7 @@ impl Expression {
                 visitor(rhs);
             }
             Expression::EmptyComponentFactory => {}
+            Expression::DebugHook { expression, .. } => visitor(expression),
         }
     }
 
@@ -1095,6 +1159,9 @@ impl Expression {
             Expression::RadialGradient { stops } => {
                 stops.iter().all(|(c, s)| c.is_constant() && s.is_constant())
             }
+            Expression::ConicGradient { stops } => {
+                stops.iter().all(|(c, s)| c.is_constant() && s.is_constant())
+            }
             Expression::EnumerationValue(_) => true,
             Expression::ReturnStatement(expr) => {
                 expr.as_ref().map_or(true, |expr| expr.is_constant())
@@ -1105,6 +1172,7 @@ impl Expression {
             Expression::SolveLayout(..) => false,
             Expression::MinMax { lhs, rhs, .. } => lhs.is_constant() && rhs.is_constant(),
             Expression::EmptyComponentFactory => true,
+            Expression::DebugHook { .. } => false,
         }
     }
 
@@ -1126,7 +1194,9 @@ impl Expression {
         } else if ty.can_convert(&target_type) {
             let from = match (ty, &target_type) {
                 (Type::Brush, Type::Color) => match self {
-                    Expression::LinearGradient { .. } | Expression::RadialGradient { .. } => {
+                    Expression::LinearGradient { .. }
+                    | Expression::RadialGradient { .. }
+                    | Expression::ConicGradient { .. } => {
                         let message = format!("Narrowing conversion from {0} to {1}. This can lead to unexpected behavior because the {0} is a gradient", Type::Brush, Type::Color);
                         diag.push_warning(message, node);
                         self
@@ -1404,6 +1474,14 @@ impl Expression {
                 ctx.diag.push_error(format!("{what} needs to be done on a property"), node);
                 false
             }
+        }
+    }
+
+    /// Unwrap DebugHook expressions to their contained sub-expression
+    pub fn ignore_debug_hooks(&self) -> &Expression {
+        match self {
+            Expression::DebugHook { expression, .. } => expression.as_ref(),
+            _ => self,
         }
     }
 }
@@ -1705,6 +1783,20 @@ pub fn pretty_print(f: &mut dyn std::fmt::Write, expression: &Expression) -> std
             }
             write!(f, ")")
         }
+        Expression::ConicGradient { stops } => {
+            write!(f, "@conic-gradient(")?;
+            let mut first = true;
+            for (c, s) in stops {
+                if !first {
+                    write!(f, ", ")?;
+                }
+                first = false;
+                pretty_print(f, c)?;
+                write!(f, " ")?;
+                pretty_print(f, s)?;
+            }
+            write!(f, ")")
+        }
         Expression::EnumerationValue(e) => match e.enumeration.values.get(e.value) {
             Some(val) => write!(f, "{}.{}", e.enumeration.name, val),
             None => write!(f, "{}.{}", e.enumeration.name, e.value),
@@ -1735,5 +1827,10 @@ pub fn pretty_print(f: &mut dyn std::fmt::Write, expression: &Expression) -> std
             write!(f, ")")
         }
         Expression::EmptyComponentFactory => write!(f, "<empty-component-factory>"),
+        Expression::DebugHook { expression, id } => {
+            write!(f, "debug-hook(")?;
+            pretty_print(f, expression)?;
+            write!(f, "\"{id}\")")
+        }
     }
 }

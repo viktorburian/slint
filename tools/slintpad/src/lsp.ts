@@ -24,8 +24,16 @@ import type { Position as LspPosition } from "vscode-languageserver-types";
 
 import slint_init, * as slint_preview from "@lsp/slint_lsp_wasm.js";
 
-import type { ResourceUrlMapperFunction } from "@lsp/slint_lsp_wasm.js";
-export { ResourceUrlMapperFunction };
+import {
+    type ResourceUrlMapperFunction,
+    type InvokeSlintpadCallback,
+    SlintPadCallbackFunction,
+} from "@lsp/slint_lsp_wasm.js";
+export {
+    ResourceUrlMapperFunction,
+    InvokeSlintpadCallback,
+    SlintPadCallbackFunction,
+};
 
 export type ShowDocumentCallback = (
     _uri: string,
@@ -220,13 +228,10 @@ export class Lsp {
     async previewer(
         resource_url_mapper: ResourceUrlMapperFunction,
         style: string,
+        slintpad_callback: InvokeSlintpadCallback,
     ): Promise<Previewer> {
         if (this.#preview_connector === null) {
-            try {
-                slint_preview.run_event_loop();
-            } catch (e) {
-                // this is not an error!
-            }
+            slint_preview.run_event_loop();
 
             const params = new URLSearchParams(window.location.search);
             const experimental = params.get("SLINT_EXPERIMENTAL_FEATURES");
@@ -243,6 +248,7 @@ export class Lsp {
                     resource_url_mapper,
                     style,
                     experimental === "1",
+                    slintpad_callback,
                 );
         }
         return new Previewer(this.#preview_connector);

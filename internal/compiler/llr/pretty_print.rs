@@ -282,6 +282,9 @@ impl<'a, T> Display for DisplayExpression<'a, T> {
                     arguments.iter().map(e).join(", ")
                 )
             }
+            Expression::ItemMemberFunctionCall { function } => {
+                write!(f, "{}()", DisplayPropertyRef(function, ctx))
+            }
             Expression::ExtraBuiltinFunctionCall { function, arguments, .. } => {
                 write!(f, "{}({})", function, arguments.iter().map(e).join(", "))
             }
@@ -326,6 +329,11 @@ impl<'a, T> Display for DisplayExpression<'a, T> {
             Expression::RadialGradient { stops } => write!(
                 f,
                 "@radial-gradient(circle, {})",
+                stops.iter().map(|(e1, e2)| format!("{} {}", e(e1), e(e2))).join(", ")
+            ),
+            Expression::ConicGradient { stops } => write!(
+                f,
+                "@conic-gradient({})",
                 stops.iter().map(|(e1, e2)| format!("{} {}", e(e1), e(e2))).join(", ")
             ),
             Expression::EnumerationValue(x) => write!(f, "{x}"),

@@ -1,7 +1,7 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-//! Passe that transform the PopupWindow element into a component
+//! This pass transforms the PopupWindow element into a component
 
 use crate::diagnostics::{BuildDiagnostics, SourceLocation};
 use crate::expression_tree::{BindingExpression, Expression, NamedReference};
@@ -48,7 +48,7 @@ fn lower_popup_window(
     diag: &mut BuildDiagnostics,
 ) {
     if let Some(binding) = popup_window_element.borrow().bindings.get(CLOSE_ON_CLICK) {
-        if popup_window_element.borrow().bindings.get(CLOSE_POLICY).is_some() {
+        if popup_window_element.borrow().bindings.contains_key(CLOSE_POLICY) {
             diag.push_error(
                 "close-policy and close-on-click cannot be set at the same time".into(),
                 &binding.borrow().span,
@@ -59,12 +59,18 @@ fn lower_popup_window(
                 CLOSE_POLICY,
                 &binding.borrow().span,
             );
-            if !matches!(binding.borrow().expression, Expression::BoolLiteral(_)) {
+            if !matches!(
+                super::ignore_debug_hooks(&binding.borrow().expression),
+                Expression::BoolLiteral(_)
+            ) {
                 report_const_error(CLOSE_ON_CLICK, &binding.borrow().span, diag);
             }
         }
     } else if let Some(binding) = popup_window_element.borrow().bindings.get(CLOSE_POLICY) {
-        if !matches!(binding.borrow().expression, Expression::EnumerationValue(_)) {
+        if !matches!(
+            super::ignore_debug_hooks(&binding.borrow().expression),
+            Expression::EnumerationValue(_)
+        ) {
             report_const_error(CLOSE_POLICY, &binding.borrow().span, diag);
         }
     }
@@ -90,26 +96,32 @@ fn lower_popup_window(
     }
 
     // Remove the popup_window_element from its parent
-    let old_size = parent_element.borrow().children.len();
-    parent_element.borrow_mut().children.retain(|child| !Rc::ptr_eq(child, popup_window_element));
-    debug_assert_eq!(
-        parent_element.borrow().children.len() + 1,
-        old_size,
-        "Exactly one child must be removed (the popup itself)"
-    );
-    parent_element.borrow_mut().has_popup_child = true;
+    let mut parent_element_borrowed = parent_element.borrow_mut();
+    let index = parent_element_borrowed
+        .children
+        .iter()
+        .position(|child| Rc::ptr_eq(child, popup_window_element))
+        .expect("PopupWindow must be a child of its parent");
+    parent_element_borrowed.children.remove(index);
+    parent_element_borrowed.has_popup_child = true;
+    drop(parent_element_borrowed);
+    if let Some(parent_cip) = &mut *parent_component.child_insertion_point.borrow_mut() {
+        if Rc::ptr_eq(&parent_cip.parent, parent_element) && parent_cip.insertion_index > index {
+            parent_cip.insertion_index -= 1;
+        }
+    }
 
     if matches!(popup_window_element.borrow().base_type, ElementType::Builtin(_)) {
         popup_window_element.borrow_mut().base_type = window_type.clone();
     }
 
     let map_close_on_click_value = |b: &BindingExpression| {
-        let Expression::BoolLiteral(v) = b.expression else {
+        let Expression::BoolLiteral(v) = super::ignore_debug_hooks(&b.expression) else {
             assert!(diag.has_errors());
             return None;
         };
         let enum_ty = crate::typeregister::BUILTIN.with(|e| e.enums.PopupClosePolicy.clone());
-        let s = if v { "close-on-click" } else { "no-auto-close" };
+        let s = if *v { "close-on-click" } else { "no-auto-close" };
         Some(EnumerationValue {
             value: enum_ty.values.iter().position(|v| v == s).unwrap(),
             enumeration: enum_ty,
@@ -119,8 +131,8 @@ fn lower_popup_window(
     let close_policy =
         popup_window_element.borrow_mut().bindings.remove(CLOSE_POLICY).and_then(|b| {
             let b = b.into_inner();
-            if let Expression::EnumerationValue(v) = b.expression {
-                Some(v)
+            if let Expression::EnumerationValue(v) = super::ignore_debug_hooks(&b.expression) {
+                Some(v.clone())
             } else {
                 assert!(diag.has_errors());
                 None

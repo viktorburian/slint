@@ -8,13 +8,13 @@ export component MenuBarItem {
     in property <MenuEntry> entry <=> base.entry;
 
     callback clicked <=> base.clicked;
+    callback hovered <=> base.hovered;
 
     min-width: base.min-width;
     min-height: base.min-height;
 
     base := MenuBarItemBase {
-        padding-left: 8px;
-        padding-right: 8px;
+        horizontal-padding: 8px;
         default-foreground: CupertinoPalette.foreground;
         hover-foreground: CupertinoPalette.foreground;
         pressed-foreground: CupertinoPalette.foreground;
@@ -27,10 +27,7 @@ export component MenuBarItem {
 }
 
 export component MenuBar inherits MenuBarBase {
-    padding-top: 0;
-    padding-bottom: 0;
-    padding-left: 8px;
-    padding-right: 8px;
+    horizontal-padding: 8px;
     min-layout-height: 24px;
 }
 
@@ -43,7 +40,7 @@ export component MenuFrame inherits MenuFrameBase {
     drop-shadow-offset-y: 0.5px;
     background: CupertinoPalette.background;
     border-radius: 6px;
-    padding: 4px;
+    margin: 4px;
 }
 
 export component MenuItem {
@@ -61,11 +58,11 @@ export component MenuItem {
             default-foreground: CupertinoPalette.foreground;
             current-foreground: CupertinoPalette.accent-foreground;
             current-background: CupertinoPalette.accent-background;
+            separator-color: CupertinoPalette.border;
             font-size: CupertinoFontSettings.body.font-size;
             font-weight: CupertinoFontSettings.body.font-weight;
             border-radius: 5px;
-            padding-left: 8px;
-            padding-right: 8px;
+            horizontal-padding: 8px;
             spacing: 4px;
             sub-menu-icon: @image-url("_arrow_forward.svg");
             icon-size: 13px;

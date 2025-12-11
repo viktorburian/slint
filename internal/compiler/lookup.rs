@@ -19,6 +19,8 @@ use std::cell::RefCell;
 
 mod named_colors;
 
+pub use named_colors::named_colors;
+
 /// Contains information which allow to lookup identifier in expressions
 pub struct LookupCtx<'a> {
     /// the name of the property for which this expression refers.
@@ -46,6 +48,9 @@ pub struct LookupCtx<'a> {
 
     /// The token currently processed
     pub current_token: Option<NodeOrToken>,
+
+    /// A stack of local variable scopes
+    pub local_variables: Vec<Vec<(SmolStr, Type)>>,
 }
 
 impl<'a> LookupCtx<'a> {
@@ -60,6 +65,7 @@ impl<'a> LookupCtx<'a> {
             type_register,
             type_loader: None,
             current_token: None,
+            local_variables: Default::default(),
         }
     }
 
@@ -112,6 +118,7 @@ pub enum LookupResultCallable {
 #[derive(Debug, derive_more::Display)]
 pub enum BuiltinNamespace {
     Colors,
+    Easing,
     Math,
     Key,
     SlintInternal,
@@ -190,6 +197,9 @@ impl LookupObject for LookupResult {
             LookupResult::Namespace(BuiltinNamespace::Colors) => {
                 (ColorSpecific, ColorFunctions).for_each_entry(ctx, f)
             }
+            LookupResult::Namespace(BuiltinNamespace::Easing) => {
+                EasingSpecific.for_each_entry(ctx, f)
+            }
             LookupResult::Namespace(BuiltinNamespace::Math) => MathFunctions.for_each_entry(ctx, f),
             LookupResult::Namespace(BuiltinNamespace::Key) => KeysLookup.for_each_entry(ctx, f),
             LookupResult::Namespace(BuiltinNamespace::SlintInternal) => {
@@ -206,6 +216,7 @@ impl LookupObject for LookupResult {
             LookupResult::Namespace(BuiltinNamespace::Colors) => {
                 (ColorSpecific, ColorFunctions).lookup(ctx, name)
             }
+            LookupResult::Namespace(BuiltinNamespace::Easing) => EasingSpecific.lookup(ctx, name),
             LookupResult::Namespace(BuiltinNamespace::Math) => MathFunctions.lookup(ctx, name),
             LookupResult::Namespace(BuiltinNamespace::Key) => KeysLookup.lookup(ctx, name),
             LookupResult::Namespace(BuiltinNamespace::SlintInternal) => {
@@ -213,6 +224,28 @@ impl LookupObject for LookupResult {
             }
             LookupResult::Callable(..) => None,
         }
+    }
+}
+
+struct LocalVariableLookup;
+impl LookupObject for LocalVariableLookup {
+    fn for_each_entry<R>(
+        &self,
+        ctx: &LookupCtx,
+        f: &mut impl FnMut(&SmolStr, LookupResult) -> Option<R>,
+    ) -> Option<R> {
+        for scope in ctx.local_variables.iter() {
+            for (name, ty) in scope {
+                if let Some(r) = f(
+                    // we need to strip the "local_" prefix because a lookup call will not include it
+                    &name.strip_prefix("local_").unwrap_or(name).into(),
+                    Expression::ReadLocalVariable { name: name.clone(), ty: ty.clone() }.into(),
+                ) {
+                    return Some(r);
+                }
+            }
+        }
+        None
     }
 }
 
@@ -719,7 +752,9 @@ impl LookupObject for MathFunctions {
             .or_else(|| f("atan", b(BuiltinFunction::ATan)))
             .or_else(|| f("atan2", b(BuiltinFunction::ATan2)))
             .or_else(|| f("log", b(BuiltinFunction::Log)))
+            .or_else(|| f("ln", b(BuiltinFunction::Ln)))
             .or_else(|| f("pow", b(BuiltinFunction::Pow)))
+            .or_else(|| f("exp", b(BuiltinFunction::Exp)))
     }
 }
 
@@ -812,6 +847,7 @@ impl LookupObject for BuiltinNamespaceLookup {
     ) -> Option<R> {
         let mut f = |s, res| f(&SmolStr::new_static(s), res);
         None.or_else(|| f("Colors", LookupResult::Namespace(BuiltinNamespace::Colors)))
+            .or_else(|| f("Easing", LookupResult::Namespace(BuiltinNamespace::Easing)))
             .or_else(|| f("Math", LookupResult::Namespace(BuiltinNamespace::Math)))
             .or_else(|| f("Key", LookupResult::Namespace(BuiltinNamespace::Key)))
             .or_else(|| {
@@ -826,16 +862,22 @@ impl LookupObject for BuiltinNamespaceLookup {
 
 pub fn global_lookup() -> impl LookupObject {
     (
-        ArgumentsLookup,
+        LocalVariableLookup,
         (
-            SpecialIdLookup,
+            ArgumentsLookup,
             (
-                IdLookup,
+                SpecialIdLookup,
                 (
-                    InScopeLookup,
+                    IdLookup,
                     (
-                        LookupType,
-                        (BuiltinNamespaceLookup, (ReturnTypeSpecificLookup, BuiltinFunctionLookup)),
+                        InScopeLookup,
+                        (
+                            LookupType,
+                            (
+                                BuiltinNamespaceLookup,
+                                (ReturnTypeSpecificLookup, BuiltinFunctionLookup),
+                            ),
+                        ),
                     ),
                 ),
             ),
@@ -935,6 +977,8 @@ impl LookupObject for StringExpression<'_> {
             .or_else(|| f("to-float", member_function(BuiltinFunction::StringToFloat)))
             .or_else(|| f("is-empty", function_call(BuiltinFunction::StringIsEmpty)))
             .or_else(|| f("character-count", function_call(BuiltinFunction::StringCharacterCount)))
+            .or_else(|| f("to-lowercase", member_function(BuiltinFunction::StringToLowercase)))
+            .or_else(|| f("to-uppercase", member_function(BuiltinFunction::StringToUppercase)))
     }
 }
 struct ColorExpression<'a>(&'a Expression);

@@ -1,11 +1,11 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-//! Passes that resolve the type of two way bindings.
+//! This pass resolves the type of two way bindings.
 //!
-//! Before this pass, two way binding that did not specified the type have Type::Void
-//! type and their bindings are still a Expression::Uncompiled,
-//! this pass will attempt to assign a type to these based on the type of property they alias.
+//! Before this pass, two way bindings that did not specify the type have Type::Void
+//! type and their bindings are still a Expression::Uncompiled.
+//! This pass will attempt to assign a type to these based on the type of property they alias.
 
 use crate::diagnostics::BuildDiagnostics;
 use crate::expression_tree::Expression;
@@ -82,7 +82,7 @@ fn resolve_alias(
         assert!(diag.has_errors());
         return;
     };
-    let nr = match &binding.borrow().expression {
+    let nr = match super::ignore_debug_hooks(&binding.borrow().expression) {
         Expression::Uncompiled(node) => {
             let Some(node) = syntax_nodes::TwoWayBinding::new(node.clone()) else {
                 assert!(
@@ -144,6 +144,7 @@ fn resolve_alias(
             }
         } else {
             let nr = nr.unwrap();
+            let is_global = nr.element().borrow().base_type == crate::langtype::ElementType::Global;
             let purity = nr.element().borrow().lookup_property(nr.name()).declared_pure;
             let mut elem = elem.borrow_mut();
             let decl = elem.property_declarations.get_mut(prop).unwrap();
@@ -152,6 +153,9 @@ fn resolve_alias(
                     format!("Purity of callbacks '{prop}' and '{nr:?}' doesn't match"),
                     &decl.type_node(),
                 );
+            }
+            if is_global {
+                diag.push_warning("Aliases to global callback are deprecated. Export the global to access the global callback directly from native code".into(), &decl.node);
             }
             decl.property_type = ty;
         }

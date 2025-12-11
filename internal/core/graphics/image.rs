@@ -7,6 +7,7 @@ This module contains image decoding and caching related types for the run-time l
 
 use crate::lengths::{PhysicalPx, ScaleFactor};
 use crate::slice::Slice;
+#[allow(unused)]
 use crate::{SharedString, SharedVector};
 
 use super::{IntRect, IntSize};
@@ -20,15 +21,16 @@ mod htmlimage;
 mod svg;
 
 #[allow(missing_docs)]
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 #[vtable::vtable]
 #[repr(C)]
 pub struct OpaqueImageVTable {
-    drop_in_place: fn(VRefMut<OpaqueImageVTable>) -> Layout,
-    dealloc: fn(&OpaqueImageVTable, ptr: *mut u8, layout: Layout),
+    drop_in_place: extern "C" fn(VRefMut<OpaqueImageVTable>) -> Layout,
+    dealloc: extern "C" fn(&OpaqueImageVTable, ptr: *mut u8, layout: Layout),
     /// Returns the image size
-    size: fn(VRef<OpaqueImageVTable>) -> IntSize,
+    size: extern "C" fn(VRef<OpaqueImageVTable>) -> IntSize,
     /// Returns a cache key
-    cache_key: fn(VRef<OpaqueImageVTable>) -> ImageCacheKey,
+    cache_key: extern "C" fn(VRef<OpaqueImageVTable>) -> ImageCacheKey,
 }
 
 #[cfg(feature = "svg")]
@@ -287,21 +289,22 @@ pub struct StaticTextures {
 /// time of the file it points to.
 #[derive(PartialEq, Eq, Debug, Hash, Clone)]
 #[repr(C)]
+#[cfg(feature = "std")]
 pub struct CachedPath {
     path: SharedString,
     /// SystemTime since UNIX_EPOC as secs
-    last_modified: u64,
+    last_modified: u32,
 }
 
+#[cfg(feature = "std")]
 impl CachedPath {
-    #[cfg(feature = "std")]
     fn new<P: AsRef<std::path::Path>>(path: P) -> Self {
-        let path_str = SharedString::from(path.as_ref().to_string_lossy().as_ref());
+        let path_str = path.as_ref().to_string_lossy().as_ref().into();
         let timestamp = std::fs::metadata(path)
             .and_then(|md| md.modified())
             .unwrap_or(std::time::UNIX_EPOCH)
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|t| t.as_secs())
+            .map(|t| t.as_secs() as u32)
             .unwrap_or_default();
         Self { path: path_str, last_modified: timestamp }
     }
@@ -315,6 +318,7 @@ pub enum ImageCacheKey {
     /// This variant indicates that no image cache key can be created for the image.
     /// For example this is the case for programmatically created images.
     Invalid = 0,
+    #[cfg(feature = "std")]
     /// The image is identified by its path on the file system and the last modification time stamp.
     Path(CachedPath) = 1,
     /// The image is identified by a URL.
@@ -342,6 +346,8 @@ impl ImageCacheKey {
             #[cfg(not(target_arch = "wasm32"))]
             ImageInner::BorrowedOpenGLTexture(..) => return None,
             ImageInner::NineSlice(nine) => vtable::VRc::borrow(nine).cache_key(),
+            #[cfg(feature = "unstable-wgpu-26")]
+            ImageInner::WGPUTexture(..) => return None,
         };
         if matches!(key, ImageCacheKey::Invalid) {
             None
@@ -375,6 +381,30 @@ impl OpaqueImage for NineSliceImage {
     }
 }
 
+/// Represents a `wgpu::Texture` for each version of WGPU we support.
+#[cfg(feature = "unstable-wgpu-26")]
+#[derive(Clone, Debug)]
+pub enum WGPUTexture {
+    /// A texture for WGPU version 26.
+    #[cfg(feature = "unstable-wgpu-26")]
+    WGPU26Texture(wgpu_26::Texture),
+}
+
+#[cfg(feature = "unstable-wgpu-26")]
+impl OpaqueImage for WGPUTexture {
+    fn size(&self) -> IntSize {
+        match self {
+            Self::WGPU26Texture(texture) => {
+                let size = texture.size();
+                (size.width, size.height).into()
+            }
+        }
+    }
+    fn cache_key(&self) -> ImageCacheKey {
+        ImageCacheKey::Invalid
+    }
+}
+
 /// A resource is a reference to binary data, for example images. They can be accessible on the file
 /// system or embedded in the resulting binary. Or they might be URLs to a web server and a downloaded
 /// is necessary before they can be used.
@@ -399,6 +429,8 @@ pub enum ImageInner {
     #[cfg(not(target_arch = "wasm32"))]
     BorrowedOpenGLTexture(BorrowedOpenGLTexture) = 6,
     NineSlice(vtable::VRc<OpaqueImageVTable, NineSliceImage>) = 7,
+    #[cfg(feature = "unstable-wgpu-26")]
+    WGPUTexture(WGPUTexture) = 8,
 }
 
 impl ImageInner {
@@ -516,6 +548,8 @@ impl ImageInner {
             #[cfg(not(target_arch = "wasm32"))]
             ImageInner::BorrowedOpenGLTexture(BorrowedOpenGLTexture { size, .. }) => *size,
             ImageInner::NineSlice(nine) => nine.0.size(),
+            #[cfg(feature = "unstable-wgpu-26")]
+            ImageInner::WGPUTexture(texture) => texture.size(),
         }
     }
 }
@@ -658,15 +692,16 @@ impl std::error::Error for LoadImageError {}
 /// ```
 #[repr(transparent)]
 #[derive(Default, Clone, Debug, PartialEq, derive_more::From)]
-pub struct Image(ImageInner);
+pub struct Image(pub(crate) ImageInner);
 
 impl Image {
     #[cfg(feature = "image-decoders")]
     /// Load an Image from a path to a file containing an image.
     ///
-    /// Supported formats are SVG, as well as formats supported by the [`image` crate](https://crates.io/crates/image):
-    /// AVIF, BMP, DDS, Farbfeld, GIF, HDR, ICO, JPEG, EXR, PNG, PNM, QOI, TGA, TIFF, WebP.
-    /// Note that some formats can be disabled using cargo features to reduce binary size and speed up compilation.
+    /// Supported formats are SVG, PNG and JPEG.
+    /// Enable support for additional formats supported by the [`image` crate](https://crates.io/crates/image) (
+    /// AVIF, BMP, DDS, Farbfeld, GIF, HDR, ICO, JPEG, EXR, PNG, PNM, QOI, TGA, TIFF, WebP)
+    /// by enabling the `image-default-formats` cargo feature.
     pub fn load_from_path(path: &std::path::Path) -> Result<Self, LoadImageError> {
         self::cache::IMAGE_CACHE.with(|global_cache| {
             let path: SharedString = path.to_str().ok_or(LoadImageError(()))?.into();
@@ -780,6 +815,19 @@ impl Image {
             },
             SharedImageBuffer::RGBA8Premultiplied(buffer) => buffer,
         })
+    }
+
+    /// Returns the [WGPU](http://wgpu.rs) 25.x texture that this image wraps; returns None if the image does not
+    /// hold such a previously wrapped texture.
+    ///
+    /// *Note*: This function is behind a feature flag and may be removed or changed in future minor releases,
+    ///         as new major WGPU releases become available.
+    #[cfg(feature = "unstable-wgpu-26")]
+    pub fn to_wgpu_26_texture(&self) -> Option<wgpu_26::Texture> {
+        match &self.0 {
+            ImageInner::WGPUTexture(WGPUTexture::WGPU26Texture(texture)) => Some(texture.clone()),
+            _ => None,
+        }
     }
 
     /// Creates a new Image from an existing OpenGL texture. The texture remains borrowed by Slint
@@ -1269,7 +1317,7 @@ pub(crate) mod ffi {
     }
 
     #[cfg(feature = "image-decoders")]
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn slint_image_load_from_path(path: &SharedString, image: *mut Image) {
         core::ptr::write(
             image,
@@ -1278,7 +1326,7 @@ pub(crate) mod ffi {
     }
 
     #[cfg(feature = "std")]
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn slint_image_load_from_embedded_data(
         data: Slice<'static, u8>,
         format: Slice<'static, u8>,
@@ -1287,20 +1335,22 @@ pub(crate) mod ffi {
         core::ptr::write(image, super::load_image_from_embedded_data(data, format));
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn slint_image_size(image: &Image) -> IntSize {
         image.size()
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_image_path(image: &Image) -> Option<&SharedString> {
         match &image.0 {
             ImageInner::EmbeddedImage { cache_key, .. } => match cache_key {
+                #[cfg(feature = "std")]
                 ImageCacheKey::Path(CachedPath { path, .. }) => Some(path),
                 _ => None,
             },
             ImageInner::NineSlice(nine) => match &nine.0 {
                 ImageInner::EmbeddedImage { cache_key, .. } => match cache_key {
+                    #[cfg(feature = "std")]
                     ImageCacheKey::Path(CachedPath { path, .. }) => Some(path),
                     _ => None,
                 },
@@ -1310,7 +1360,7 @@ pub(crate) mod ffi {
         }
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn slint_image_from_embedded_textures(
         textures: &'static StaticTextures,
         image: *mut Image,
@@ -1318,13 +1368,13 @@ pub(crate) mod ffi {
         core::ptr::write(image, Image::from(ImageInner::StaticTextures(textures)));
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn slint_image_compare_equal(image1: &Image, image2: &Image) -> bool {
         image1.eq(image2)
     }
 
     /// Call [`Image::set_nine_slice_edges`]
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_image_set_nine_slice_edges(
         image: &mut Image,
         top: u16,
@@ -1335,7 +1385,7 @@ pub(crate) mod ffi {
         image.set_nine_slice_edges(top, right, bottom, left);
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_image_to_rgb8(
         image: &Image,
         data: &mut SharedVector<Rgb8Pixel>,
@@ -1350,7 +1400,7 @@ pub(crate) mod ffi {
         })
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_image_to_rgba8(
         image: &Image,
         data: &mut SharedVector<Rgba8Pixel>,
@@ -1365,7 +1415,7 @@ pub(crate) mod ffi {
         })
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_image_to_rgba8_premultiplied(
         image: &Image,
         data: &mut SharedVector<Rgba8Pixel>,

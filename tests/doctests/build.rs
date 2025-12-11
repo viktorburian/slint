@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().map_or(true, |e| e != "md" && e != "mdx") {
+        if path.extension().is_none_or(|e| e != "md" && e != "mdx") {
             continue;
         }
 
@@ -85,6 +85,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         writeln!(tests_file, "}}")?;
         println!("cargo:rerun-if-changed={}", path.display());
     }
+
+    tests_file.flush()?;
 
     println!("cargo:rustc-env=TEST_FUNCTIONS={}", tests_file_path.to_string_lossy());
     println!("cargo:rustc-env=SLINT_ENABLE_EXPERIMENTAL_FEATURES=1");

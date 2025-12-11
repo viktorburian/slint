@@ -1,9 +1,8 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-use std::cell::RefCell;
 use std::num::NonZeroU32;
-use std::rc::Rc;
+use std::{cell::RefCell, sync::Arc};
 
 use glutin::{
     config::GetGlConfig,
@@ -12,13 +11,12 @@ use glutin::{
     prelude::*,
     surface::{SurfaceAttributesBuilder, WindowSurface},
 };
-use i_slint_core::graphics::RequestedGraphicsAPI;
+use i_slint_core::api::{GraphicsAPI, PhysicalSize as PhysicalWindowSize, Window};
+use i_slint_core::graphics::{BorrowedOpenGLTexture, RequestedGraphicsAPI, RequestedOpenGLVersion};
 use i_slint_core::item_rendering::DirtyRegion;
-use i_slint_core::{api::GraphicsAPI, platform::PlatformError};
-use i_slint_core::{
-    api::{PhysicalSize as PhysicalWindowSize, Window},
-    graphics::RequestedOpenGLVersion,
-};
+use i_slint_core::platform::PlatformError;
+
+use crate::SkiaSharedContext;
 
 /// This surface type renders into the given window with OpenGL, using glutin and glow libraries.
 pub struct OpenGLSurface {
@@ -31,8 +29,9 @@ pub struct OpenGLSurface {
 
 impl super::Surface for OpenGLSurface {
     fn new(
-        window_handle: Rc<dyn raw_window_handle::HasWindowHandle>,
-        display_handle: Rc<dyn raw_window_handle::HasDisplayHandle>,
+        _shared_context: &SkiaSharedContext,
+        window_handle: Arc<dyn raw_window_handle::HasWindowHandle + Send + Sync>,
+        display_handle: Arc<dyn raw_window_handle::HasDisplayHandle + Send + Sync>,
         size: PhysicalWindowSize,
         requested_graphics_api: Option<RequestedGraphicsAPI>,
     ) -> Result<Self, PlatformError> {
@@ -40,7 +39,7 @@ impl super::Surface for OpenGLSurface {
             window_handle,
             display_handle,
             size,
-            requested_graphics_api.map(TryInto::try_into).transpose()?,
+            requested_graphics_api.as_ref().map(TryInto::try_into).transpose()?,
             glutin::config::ConfigTemplateBuilder::new(),
             None,
         )
@@ -48,14 +47,6 @@ impl super::Surface for OpenGLSurface {
 
     fn name(&self) -> &'static str {
         "opengl"
-    }
-
-    fn supports_graphics_api() -> bool {
-        true
-    }
-
-    fn supports_graphics_api_with_self(&self) -> bool {
-        true
     }
 
     fn with_graphics_api(&self, callback: &mut dyn FnMut(GraphicsAPI<'_>)) {
@@ -151,12 +142,50 @@ impl super::Surface for OpenGLSurface {
         };
         Ok(rgb_bits + config.alpha_size())
     }
+
+    fn import_opengl_texture(
+        &self,
+        canvas: &skia_safe::Canvas,
+        BorrowedOpenGLTexture { texture_id, size, origin, .. }: &BorrowedOpenGLTexture,
+    ) -> Option<skia_safe::Image> {
+        unsafe {
+            let mut texture_info = skia_safe::gpu::gl::TextureInfo::from_target_and_id(
+                glow::TEXTURE_2D,
+                texture_id.get(),
+            );
+            texture_info.format = glow::RGBA8;
+            let backend_texture = skia_safe::gpu::backend_textures::make_gl(
+                (size.width as _, size.height as _),
+                skia_safe::gpu::Mipmapped::No,
+                texture_info,
+                "Borrowed GL texture",
+            );
+            skia_safe::image::Image::from_texture(
+                canvas.recording_context().as_mut().unwrap(),
+                &backend_texture,
+                match origin {
+                    i_slint_core::graphics::BorrowedOpenGLTextureOrigin::TopLeft => {
+                        skia_safe::gpu::SurfaceOrigin::TopLeft
+                    }
+                    i_slint_core::graphics::BorrowedOpenGLTextureOrigin::BottomLeft => {
+                        skia_safe::gpu::SurfaceOrigin::BottomLeft
+                    }
+                    _ => unimplemented!(
+                        "internal error: missing implementation for BorrowedOpenGLTextureOrigin"
+                    ),
+                },
+                skia_safe::ColorType::RGBA8888,
+                skia_safe::AlphaType::Unpremul,
+                None,
+            )
+        }
+    }
 }
 
 impl OpenGLSurface {
     pub fn new_with_config(
-        window_handle: Rc<dyn raw_window_handle::HasWindowHandle>,
-        display_handle: Rc<dyn raw_window_handle::HasDisplayHandle>,
+        window_handle: Arc<dyn raw_window_handle::HasWindowHandle>,
+        display_handle: Arc<dyn raw_window_handle::HasDisplayHandle>,
         size: PhysicalWindowSize,
         requested_opengl_version: Option<RequestedOpenGLVersion>,
         config_builder: glutin::config::ConfigTemplateBuilder,
@@ -276,7 +305,7 @@ impl OpenGLSurface {
             glutin::display::Display::new(_display_handle.as_raw(), display_api_preference)
                 .map_err(|glutin_error| {
                     format!(
-                        "Error creating glutin display for native display {:#?}: {}",
+                        "Error creating glutin display for native display {:?}: {}",
                         _display_handle.as_raw(),
                         glutin_error
                     )

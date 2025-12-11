@@ -3,7 +3,7 @@
 
 [package]
 name = "usecases"
-version = "1.11.0"
+version = "1.13.1"
 authors = ["Slint Developers <info@slint.dev>"]
 edition = "2021"
 build = "build.rs"
@@ -30,5 +30,3 @@ console_error_panic_hook = "0.1.5"
 
 [build-dependencies]
 slint-build = { path = "../../../api/rs/build" }
-
-

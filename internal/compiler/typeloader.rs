@@ -25,8 +25,9 @@ enum LoadedDocument {
 /// Storage for a cache of all loaded documents
 #[derive(Default)]
 struct LoadedDocuments {
-    /// maps from the canonical file name to the object_tree::Document
-    docs: HashMap<PathBuf, LoadedDocument>,
+    /// maps from the canonical file name to the object_tree::Document.
+    /// Also contains the error that occurred when parsing the document (and only the parse error, not further semantic errors)
+    docs: HashMap<PathBuf, (LoadedDocument, Vec<crate::diagnostics::Diagnostic>)>,
     /// The .slint files that are currently being loaded, potentially asynchronously.
     /// When a task start loading a file, it will add an empty vector to this map, and
     /// the same task will remove the entry from the map when finished, and awake all
@@ -137,7 +138,7 @@ pub(crate) fn snapshot_with_extra_doc(
     if let Some(doc_node) = &new_doc.node {
         let path = doc_node.source_file.path().to_path_buf();
         if let Some(r) = &mut result {
-            r.all_documents.docs.insert(path, LoadedDocument::Document(new_doc));
+            r.all_documents.docs.insert(path, (LoadedDocument::Document(new_doc), vec![]));
         }
     }
 
@@ -194,7 +195,7 @@ impl Snapshotter {
             all_documents,
             global_type_registry: self.snapshot_type_register(&type_loader.global_type_registry),
             compiler_config: type_loader.compiler_config.clone(),
-            style: type_loader.style.clone(),
+            resolved_style: type_loader.resolved_style.clone(),
         })
     }
 
@@ -229,7 +230,7 @@ impl Snapshotter {
             return None;
         }
 
-        loaded_documents.docs.values().for_each(|d| {
+        loaded_documents.docs.values().for_each(|(d, _)| {
             if let LoadedDocument::Document(d) = d {
                 self.create_document(d)
             }
@@ -239,17 +240,20 @@ impl Snapshotter {
             docs: loaded_documents
                 .docs
                 .iter()
-                .map(|(p, d)| {
+                .map(|(p, (d, err))| {
                     (
                         p.clone(),
-                        match d {
-                            LoadedDocument::Document(d) => {
-                                LoadedDocument::Document(self.snapshot_document(d))
-                            }
-                            LoadedDocument::Invalidated(d) => {
-                                LoadedDocument::Invalidated(d.clone())
-                            }
-                        },
+                        (
+                            match d {
+                                LoadedDocument::Document(d) => {
+                                    LoadedDocument::Document(self.snapshot_document(d))
+                                }
+                                LoadedDocument::Invalidated(d) => {
+                                    LoadedDocument::Invalidated(d.clone())
+                                }
+                            },
+                            err.clone(),
+                        ),
                     )
                 })
                 .collect(),
@@ -323,13 +327,8 @@ impl Snapshotter {
                     .collect(),
             );
 
-            let child_insertion_point = RefCell::new(
-                component
-                    .child_insertion_point
-                    .borrow()
-                    .as_ref()
-                    .map(|(e, s, n)| (self.use_element(e), *s, n.clone())),
-            );
+            let child_insertion_point =
+                RefCell::new(component.child_insertion_point.borrow().clone());
 
             let popup_windows = RefCell::new(
                 component
@@ -449,7 +448,7 @@ impl Snapshotter {
             .transitions
             .iter()
             .map(|t| object_tree::Transition {
-                is_out: t.is_out,
+                direction: t.direction,
                 state_id: t.state_id.clone(),
                 property_animations: t
                     .property_animations
@@ -566,7 +565,7 @@ impl Snapshotter {
                             .iter()
                             .map(|tpa| object_tree::TransitionPropertyAnimation {
                                 state_id: tpa.state_id,
-                                is_out: tpa.is_out,
+                                direction: tpa.direction,
                                 animation: self.create_and_snapshot_element(&tpa.animation),
                             })
                             .collect(),
@@ -641,11 +640,12 @@ impl Snapshotter {
         }
     }
 
-    fn snapshot_timer(&mut self, popup_window: &object_tree::Timer) -> object_tree::Timer {
+    fn snapshot_timer(&mut self, timer: &object_tree::Timer) -> object_tree::Timer {
         object_tree::Timer {
-            interval: popup_window.interval.snapshot(self),
-            running: popup_window.running.snapshot(self),
-            triggered: popup_window.triggered.snapshot(self),
+            interval: timer.interval.snapshot(self),
+            running: timer.running.snapshot(self),
+            triggered: timer.triggered.snapshot(self),
+            element: timer.element.clone(),
         }
     }
 
@@ -810,6 +810,12 @@ impl Snapshotter {
                     .map(|(e1, e2)| (self.snapshot_expression(e1), self.snapshot_expression(e2)))
                     .collect(),
             },
+            Expression::ConicGradient { stops } => Expression::ConicGradient {
+                stops: stops
+                    .iter()
+                    .map(|(e1, e2)| (self.snapshot_expression(e1), self.snapshot_expression(e2)))
+                    .collect(),
+            },
             Expression::ReturnStatement(expr) => Expression::ReturnStatement(
                 expr.as_ref().map(|e| Box::new(self.snapshot_expression(e))),
             ),
@@ -836,7 +842,9 @@ impl Snapshotter {
 pub struct TypeLoader {
     pub global_type_registry: Rc<RefCell<TypeRegister>>,
     pub compiler_config: CompilerConfiguration,
-    style: String,
+    /// The style that was specified in the compiler configuration, but resolved. So "native" for example is resolved to the concrete
+    /// style.
+    pub resolved_style: String,
     all_documents: LoadedDocuments,
 }
 
@@ -864,7 +872,7 @@ impl TypeLoader {
         let myself = Self {
             global_type_registry,
             compiler_config,
-            style: style.clone(),
+            resolved_style: style.clone(),
             all_documents: Default::default(),
         };
 
@@ -890,7 +898,7 @@ impl TypeLoader {
     }
 
     pub fn drop_document(&mut self, path: &Path) -> Result<(), std::io::Error> {
-        if let Some(LoadedDocument::Document(doc)) = self.all_documents.docs.remove(path) {
+        if let Some((LoadedDocument::Document(doc), _)) = self.all_documents.docs.remove(path) {
             for dep in &doc.imports {
                 self.all_documents
                     .dependencies
@@ -912,7 +920,7 @@ impl TypeLoader {
 
     /// Invalidate a document and all its dependencies.
     pub fn invalidate_document(&mut self, path: &Path) -> HashSet<PathBuf> {
-        if let Some(d) = self.all_documents.docs.get_mut(path) {
+        if let Some((d, _)) = self.all_documents.docs.get_mut(path) {
             if let LoadedDocument::Document(doc) = d {
                 for dep in &doc.imports {
                     self.all_documents
@@ -1001,7 +1009,7 @@ impl TypeLoader {
                 let Some(doc_path) = doc_path else { return false };
                 let mut state = state.borrow_mut();
                 let state = &mut *state;
-                let Some(LoadedDocument::Document(doc)) = state.tl.all_documents.docs.get(&doc_path) else {
+                let Some(doc) = state.tl.get_document(&doc_path) else {
                     panic!("Just loaded document not available")
                 };
                 match &import.import_kind {
@@ -1040,7 +1048,7 @@ impl TypeLoader {
                                 .filter_map(|e| {
                                     let (imported_name, exported_name) = ExportedName::from_export_specifier(&e);
                                     let Some(r) = doc.exports.find(&imported_name) else {
-                                        state.diag.push_error(format!("No exported type called '{imported_name}' found in {doc_path:?}"), &e);
+                                        state.diag.push_error(format!("No exported type called '{imported_name}' found in \"{}\"", doc_path.display()), &e);
                                         return None;
                                     };
                                     Some((exported_name, r))
@@ -1081,7 +1089,7 @@ impl TypeLoader {
                 None => return None,
             };
 
-        let Some(LoadedDocument::Document(doc)) = self.all_documents.docs.get(&doc_path) else {
+        let Some(doc) = self.get_document(&doc_path) else {
             panic!("Just loaded document not available")
         };
 
@@ -1197,10 +1205,12 @@ impl TypeLoader {
                 }
                 std::collections::hash_map::Entry::Vacant(v) => {
                     match all_documents.docs.get(path_canon.as_path()) {
-                        Some(LoadedDocument::Document(_)) => core::task::Poll::Ready((true, None)),
-                        Some(LoadedDocument::Invalidated(doc)) => {
+                        Some((LoadedDocument::Document(_), _)) => {
+                            core::task::Poll::Ready((true, None))
+                        }
+                        Some((LoadedDocument::Invalidated(doc), errors)) => {
                             v.insert(Default::default());
-                            core::task::Poll::Ready((false, Some(doc.clone())))
+                            core::task::Poll::Ready((false, Some((doc.clone(), errors.clone()))))
                         }
                         None => {
                             v.insert(Default::default());
@@ -1212,11 +1222,13 @@ impl TypeLoader {
         })
         .await;
         if is_loaded {
-            state.borrow_mut().diag.all_loaded_files.insert(path_canon.clone());
             return Some(path_canon);
         }
 
-        let doc_node = if let Some(doc_node) = doc_node {
+        let doc_node = if let Some((doc_node, errors)) = doc_node {
+            for e in errors {
+                state.borrow_mut().diag.push_internal_error(e);
+            }
             Some(doc_node)
         } else {
             let source_code_result = if let Some(builtin) = builtin {
@@ -1312,13 +1324,15 @@ impl TypeLoader {
     ///
     /// The path must be canonical
     pub async fn reload_cached_file(&mut self, path: &Path, diag: &mut BuildDiagnostics) {
-        let doc_node = {
-            let Some(LoadedDocument::Invalidated(doc_node)) = self.all_documents.docs.get(path)
-            else {
-                return;
-            };
-            doc_node.clone()
+        let Some((LoadedDocument::Invalidated(doc_node), errors)) =
+            self.all_documents.docs.get(path)
+        else {
+            return;
         };
+        let doc_node = doc_node.clone();
+        for e in errors {
+            diag.push_internal_error(e.clone());
+        }
         let state = RefCell::new(BorrowedTypeLoader { tl: self, diag });
         Self::load_file_impl(&state, path, doc_node, false, &Default::default()).await;
     }
@@ -1337,6 +1351,7 @@ impl TypeLoader {
         let path = crate::pathutils::clean_path(path);
         let doc_node: syntax_nodes::Document =
             crate::parser::parse(source_code, Some(source_path), diag).into();
+        let parse_errors = diag.iter().cloned().collect();
         let state = RefCell::new(BorrowedTypeLoader { tl: self, diag });
         let (path, mut doc) =
             Self::load_doc_no_pass(&state, &path, doc_node, false, &Default::default()).await;
@@ -1348,7 +1363,11 @@ impl TypeLoader {
         } else {
             None
         };
-        state.tl.all_documents.docs.insert(path.clone(), LoadedDocument::Document(doc));
+        state
+            .tl
+            .all_documents
+            .docs
+            .insert(path.clone(), (LoadedDocument::Document(doc), parse_errors));
         (path, raw_type_loader)
     }
 
@@ -1359,6 +1378,13 @@ impl TypeLoader {
         is_builtin: bool,
         import_stack: &HashSet<PathBuf>,
     ) {
+        let parse_errors = state
+            .borrow()
+            .diag
+            .iter()
+            .filter(|e| e.source_file().is_some_and(|f| f == path))
+            .cloned()
+            .collect();
         let (path, doc) =
             Self::load_doc_no_pass(state, path, doc_node, is_builtin, import_stack).await;
 
@@ -1376,7 +1402,7 @@ impl TypeLoader {
                 .or_default()
                 .insert(path.clone());
         }
-        state.tl.all_documents.docs.insert(path, LoadedDocument::Document(doc));
+        state.tl.all_documents.docs.insert(path, (LoadedDocument::Document(doc), parse_errors));
     }
 
     async fn load_doc_no_pass<'a>(
@@ -1506,7 +1532,7 @@ impl TypeLoader {
             .chain(
                 (file_to_import == "std-widgets.slint"
                     || referencing_file.is_some_and(|x| x.starts_with("builtin:/")))
-                .then(|| format!("builtin:/{}", self.style).into()),
+                .then(|| format!("builtin:/{}", self.resolved_style).into()),
             )
             .find_map(|include_dir| {
                 let candidate = crate::pathutils::join(&include_dir, Path::new(file_to_import))?;
@@ -1567,7 +1593,7 @@ impl TypeLoader {
     /// Return a document if it was already loaded
     pub fn get_document<'b>(&'b self, path: &Path) -> Option<&'b object_tree::Document> {
         let path = crate::pathutils::clean_path(path);
-        if let Some(LoadedDocument::Document(d)) = self.all_documents.docs.get(&path) {
+        if let Some((LoadedDocument::Document(d), _)) = self.all_documents.docs.get(&path) {
             Some(d)
         } else {
             None
@@ -1581,7 +1607,7 @@ impl TypeLoader {
 
     /// Returns an iterator over all the loaded documents
     pub fn all_documents(&self) -> impl Iterator<Item = &object_tree::Document> + '_ {
-        self.all_documents.docs.values().filter_map(|d| match d {
+        self.all_documents.docs.values().filter_map(|(d, _)| match d {
             LoadedDocument::Document(d) => Some(d),
             LoadedDocument::Invalidated(_) => None,
         })
@@ -1591,7 +1617,7 @@ impl TypeLoader {
     pub fn all_file_documents(
         &self,
     ) -> impl Iterator<Item = (&PathBuf, &syntax_nodes::Document)> + '_ {
-        self.all_documents.docs.iter().filter_map(|(p, d)| {
+        self.all_documents.docs.iter().filter_map(|(p, (d, _))| {
             Some((
                 p,
                 match d {
@@ -1631,9 +1657,14 @@ fn get_native_style(all_loaded_files: &mut std::collections::BTreeSet<PathBuf>) 
                 )
             })
         });
+
     if let Some(style) = target_path.and_then(|target_path| {
-        all_loaded_files.insert(target_path.clone());
-        std::fs::read_to_string(target_path).map(|style| style.trim().into()).ok()
+        std::fs::read_to_string(&target_path)
+            .map(|style| {
+                all_loaded_files.insert(target_path);
+                style.trim().into()
+            })
+            .ok()
     }) {
         return style;
     }

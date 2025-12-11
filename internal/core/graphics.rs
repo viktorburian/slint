@@ -56,6 +56,9 @@ pub mod boxshadowcache;
 pub mod border_radius;
 pub use border_radius::*;
 
+#[cfg(feature = "unstable-wgpu-26")]
+pub mod wgpu_26;
+
 /// CachedGraphicsData allows the graphics backend to store an arbitrary piece of data associated with
 /// an item, which is typically computed by accessing properties. The dependency_tracker is used to allow
 /// for a lazy computation. Typically, back ends store either compute intensive data or handles that refer to
@@ -177,7 +180,7 @@ pub enum RequestedOpenGLVersion {
 
 /// Internal enum specify which graphics API should be used, when
 /// the backend selector requests that from a built-in backend.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum RequestedGraphicsAPI {
     /// OpenGL (ES)
     OpenGL(RequestedOpenGLVersion),
@@ -187,14 +190,19 @@ pub enum RequestedGraphicsAPI {
     Vulkan,
     /// Direct 3D
     Direct3D,
+    #[cfg(feature = "unstable-wgpu-26")]
+    /// WGPU 26.x
+    WGPU26(wgpu_26::api::WGPUConfiguration),
 }
 
-impl TryFrom<RequestedGraphicsAPI> for RequestedOpenGLVersion {
+impl TryFrom<&RequestedGraphicsAPI> for RequestedOpenGLVersion {
     type Error = PlatformError;
 
-    fn try_from(requested_graphics_api: RequestedGraphicsAPI) -> Result<Self, Self::Error> {
+    fn try_from(requested_graphics_api: &RequestedGraphicsAPI) -> Result<Self, Self::Error> {
         match requested_graphics_api {
-            RequestedGraphicsAPI::OpenGL(requested_open_glversion) => Ok(requested_open_glversion),
+            RequestedGraphicsAPI::OpenGL(requested_open_glversion) => {
+                Ok(requested_open_glversion.clone())
+            }
             RequestedGraphicsAPI::Metal => {
                 Err("Metal rendering is not supported with an OpenGL renderer".into())
             }
@@ -203,6 +211,10 @@ impl TryFrom<RequestedGraphicsAPI> for RequestedOpenGLVersion {
             }
             RequestedGraphicsAPI::Direct3D => {
                 Err("Direct3D rendering is not supported with an OpenGL renderer".into())
+            }
+            #[cfg(feature = "unstable-wgpu-26")]
+            RequestedGraphicsAPI::WGPU26(..) => {
+                Err("WGPU 26.x rendering is not supported with an OpenGL renderer".into())
             }
         }
     }
@@ -214,19 +226,15 @@ impl From<RequestedOpenGLVersion> for RequestedGraphicsAPI {
     }
 }
 
-/// This enum describes the how pixels from a source are merged with the pixels in a destination image.
-/// This is a sub-set of the standard [Porter-Duff](https://en.wikipedia.org/wiki/Alpha_compositing) modes.
-#[repr(u8)]
-#[allow(dead_code)]
-#[derive(Default, Copy, Clone, Debug)]
-#[non_exhaustive]
-pub enum CompositionMode {
-    /// Only pixels from the source target are drawn.
-    Source,
-    /// The source is placed over the destination.
-    #[default]
-    SourceOver,
-    // TODO: maybe add more modes (e.g. xor, plus darker, etc.)
+/// Private API exposed to just the renderers to create GraphicsAPI instance with
+/// non-exhaustive enum variant.
+#[cfg(feature = "unstable-wgpu-26")]
+pub fn create_graphics_api_wgpu_26(
+    instance: wgpu_26::wgpu::Instance,
+    device: wgpu_26::wgpu::Device,
+    queue: wgpu_26::wgpu::Queue,
+) -> crate::api::GraphicsAPI<'static> {
+    crate::api::GraphicsAPI::WGPU26 { instance, device, queue }
 }
 
 /// Internal module for use by cbindgen and the C++ platform API layer.

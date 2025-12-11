@@ -12,7 +12,8 @@ import {
     CPP_BASE_URL,
     RUST_SLINT_CRATE_URL,
     NODEJS_BASE_URL,
-} from "./src/utils/site-config";
+    PYTHON_BASE_URL,
+} from "@slint/common-files/src/utils/site-config";
 
 // https://astro.build/config
 export default defineConfig({
@@ -45,9 +46,9 @@ export default defineConfig({
             customCss: ["./src/styles/custom.css", "./src/styles/theme.css"],
 
             components: {
-                Footer: "./src/components/Footer.astro",
-                Header: "./src/components/Header.astro",
-                Banner: "./src/components/Banner.astro",
+                Footer: "@slint/common-files/src/components/Footer.astro",
+                Header: "@slint/common-files/src/components/Header.astro",
+                Banner: "@slint/common-files/src/components/Banner.astro",
             },
             plugins: [
                 starlightSidebarTopics([
@@ -60,7 +61,10 @@ export default defineConfig({
                             {
                                 label: "Tooling",
                                 collapsed: true,
-                                items: ["guide/tooling/vscode"],
+                                items: [
+                                    "guide/tooling/vscode",
+                                    "guide/tooling/figma-inspector",
+                                ],
                             },
                             {
                                 label: "Language",
@@ -146,6 +150,7 @@ export default defineConfig({
                                         label: "Custom Controls",
                                         slug: "guide/development/custom-controls",
                                     },
+                                    "guide/development/best-practices",
                                 ],
                             },
                             {
@@ -154,7 +159,10 @@ export default defineConfig({
                                 items: [
                                     "guide/platforms/desktop",
                                     "guide/platforms/embedded",
-                                    "guide/platforms/mobile",
+                                    "guide/platforms/android",
+                                    "guide/platforms/ios",
+                                    "guide/platforms/web",
+                                    "guide/platforms/other",
                                 ],
                             },
                             {
@@ -291,6 +299,10 @@ export default defineConfig({
                                             },
                                         ],
                                     },
+                                    {
+                                        label: "Platform Namespace",
+                                        slug: "reference/global-namespaces/platform",
+                                    },
                                 ],
                             },
                             {
@@ -403,6 +415,15 @@ export default defineConfig({
                                 link: `${NODEJS_BASE_URL}`,
                                 attrs: { target: "_blank" },
                             },
+                            {
+                                label: "Python ↗",
+                                badge: {
+                                    text: "beta",
+                                    variant: "caution",
+                                },
+                                link: `${PYTHON_BASE_URL}`,
+                                attrs: { target: "_blank" },
+                            },
                         ],
                     },
                 ]),
@@ -410,13 +431,77 @@ export default defineConfig({
                     errorOnLocalLinks: false,
                 }),
             ],
-            social: {
-                github: "https://github.com/slint-ui/slint",
-                "x.com": "https://x.com/slint_ui",
-                linkedin: "https://www.linkedin.com/company/slint-ui/",
-                mastodon: "https://fosstodon.org/@slint",
-            },
+            social: [
+                {
+                    icon: "github",
+                    label: "GitHub",
+                    href: "https://github.com/slint-ui/slint",
+                },
+                { icon: "x.com", label: "X", href: "https://x.com/slint_ui" },
+                {
+                    icon: "linkedin",
+                    label: "Linkedin",
+                    href: "https://www.linkedin.com/company/slint-ui",
+                },
+                {
+                    icon: "mastodon",
+                    label: "Mastodon",
+                    href: "https://fosstodon.org/@slint",
+                },
+            ],
             favicon: "favicon.svg",
+            head: [
+                {
+                    tag: "link",
+                    attrs: {
+                        rel: "icon",
+                        type: "image/svg+xml",
+                        href: `${BASE_PATH}/favicon.svg`,
+                    },
+                },
+                {
+                    tag: "link",
+                    attrs: {
+                        rel: "icon",
+                        type: "image/png",
+                        sizes: "32x32",
+                        href: `${BASE_PATH}/favicon-32x32.png`,
+                    },
+                },
+                {
+                    tag: "link",
+                    attrs: {
+                        rel: "icon",
+                        type: "image/png",
+                        sizes: "16x16",
+                        href: `${BASE_PATH}/favicon-16x16.png`,
+                    },
+                },
+                {
+                    tag: "link",
+                    attrs: {
+                        rel: "icon",
+                        type: "image/x-icon",
+                        href: `${BASE_PATH}/favicon.ico`,
+                    },
+                },
+                {
+                    tag: "link",
+                    attrs: {
+                        rel: "mask-icon",
+                        href: `${BASE_PATH}/favicon.svg`,
+                        color: "#8D46E7",
+                    },
+                },
+                {
+                    tag: "link",
+                    attrs: {
+                        rel: "apple-touch-icon",
+                        sizes: "180x180",
+                        href: `${BASE_PATH}/apple-touch-icon.png`,
+                    },
+                },
+            ],
         }),
     ],
 });

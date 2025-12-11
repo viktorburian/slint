@@ -60,7 +60,11 @@
             ]
         },
         {
-            "languageId": ["markdown", "md", "mdx"],
+            "languageId": [
+                "markdown",
+                "md",
+                "mdx"
+            ],
             "words": [
                 "Espressif",
                 "linebuffer",
@@ -72,6 +76,7 @@
                 "standardlistview",
                 "standardtableview",
                 "rustup",
+                "setdefault",
                 "Sonoma",
                 "SUBDIR",
                 "Torizon",
@@ -81,7 +86,11 @@
                 "vectormodel",
                 "structslint",
                 "namespaceslint",
-                "compilerconfiguration"
+                "compilerconfiguration",
+                "tschüß",
+                "TSCHÜSS",
+                "ὈΔΥΣΣΕΎΣ",
+                "ὀδυσσεύς"
             ],
         }
     ],
@@ -122,24 +131,29 @@
         "linebreak",
         "lineedit",
         "listview",
+        "LINUXFB",
         "lvalue",
         "microcontroller",
         "microcontrollers",
         "muda",
         "MSVC",
         "napi",
+        "Oooops",
         "ogoffart",
         "opengl",
         "opengles",
         "pixmap",
         "prestart",
         "printerdemo",
+        "pythonw",
         "riscv",
         "rowspan",
         "rustc",
         "rustdoc",
         "rustdocs",
+        "rustflags",
         "rvalue",
+        "SANDBOXING",
         "scrollview",
         "SDK",
         "seti",
@@ -181,7 +195,11 @@
         "Toradex",
         "Vivante",
         "espflash",
-        "pico"
+        "pico",
+        "wgpu",
+        "WGPU",
+        "Xcodegen",
+        "Xcodeproj",
     ],
     "ignorePaths": [
         "api/cpp/docs/conf.py",
@@ -190,7 +208,8 @@
         "cspell.json",
         "LICENSES",
         "examples/*/lang/**",
-        ".github/workflows/*.yaml"
+        ".github/workflows/*.yaml",
+        "**/package.json"
     ],
     "ignoreRegExpList": [
         // Color encodings in all languages:

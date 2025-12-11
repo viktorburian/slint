@@ -68,22 +68,38 @@ export component LineEditBase inherits Rectangle {
     }
 
     ContextMenuArea {
+        enabled: root.enabled;
         Menu {
             MenuItem {
                 title: @tr("Cut");
-                activated => { text-input.cut(); }
+                enabled: !root.read-only && root.enabled;
+                activated => {
+                    text-input.cut();
+                }
             }
+
             MenuItem {
                 title: @tr("Copy");
-                activated => { text-input.copy(); }
+                enabled: !root.text.is-empty;
+                activated => {
+                    text-input.copy();
+                }
             }
+
             MenuItem {
                 title: @tr("Paste");
-                activated => { text-input.paste(); }
+                enabled: !root.read-only && root.enabled;
+                activated => {
+                    text-input.paste();
+                }
             }
+
             MenuItem {
                 title: @tr("Select All");
-                activated => { text-input.select-all(); }
+                enabled: !root.text.is-empty;
+                activated => {
+                    text-input.select-all();
+                }
             }
         }
 
@@ -122,6 +138,31 @@ export component LineEditBase inherits Rectangle {
             key-released(event) => {
                 root.key-released(event)
             }
+        }
+    }
+}
+
+export component LineEditClearIcon inherits Image {
+    in-out property <string> text;
+    callback clear();
+
+    vertical-alignment: center;
+    TouchArea {
+        clicked => { root.clear(); }
+    }
+}
+
+export component LineEditPasswordIcon inherits Image {
+    callback show-password-changed(bool);
+    in property <bool> show-password;
+    in property <image> show-password-image;
+    in property <image> hide-password-image;
+
+    source: show-password ? hide-password-image : show-password-image;
+    vertical-alignment: center;
+    TouchArea {
+        clicked => {
+            root.show-password-changed(!show-password);
         }
     }
 }
