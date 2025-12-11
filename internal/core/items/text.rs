@@ -1175,7 +1175,8 @@ impl TextInputVisualRepresentation {
             return;
         }
 
-        let password_character = password_character_fn.map_or('●', |f| f());
+        // let password_character = password_character_fn.map_or('●', |f| f());
+        let password_character = password_character_fn.map_or('*', |f| f());
 
         let text = &mut self.text;
         let fixup_range = |r: &mut core::ops::Range<usize>| {
